@@ -6,8 +6,8 @@ import { useMutation } from "@tanstack/react-query";
 import {
   CompetitionType,
   CreateCompetitionPayload,
-  GroupDetails,
-  GroupListItem,
+  GroupDetailsResponse,
+  GroupResponse,
   Metric,
 } from "@wise-old-man/utils";
 import { cn } from "~/utils/styling";
@@ -23,14 +23,14 @@ import { CompetitionTeamsForm } from "./CompetitionTeamsForm";
 import { CompetitionParticipantsForm } from "./CompetitionParticipantsForm";
 import { SaveCompetitionVerificationCodeDialog } from "./SaveCompetitionVerificationCodeDialog";
 
+import LoadingIcon from "~/assets/loading.svg";
 import ArrowRightIcon from "~/assets/arrow_right.svg";
-import { Alert, AlertDescription, AlertTitle } from "../Alert";
 
 type FormStep = "info" | "group" | "participants";
 type TimezoneOption = "local" | "utc";
 
 interface CreateCompetitionFormProps {
-  group?: GroupDetails;
+  group?: GroupDetailsResponse;
 }
 
 export function CreateCompetitionForm(props: CreateCompetitionFormProps) {
@@ -38,7 +38,7 @@ export function CreateCompetitionForm(props: CreateCompetitionFormProps) {
   const client = useWOMClient();
   const router = useRouter();
 
-  const [group, setGroup] = useState<GroupListItem | undefined>(props.group);
+  const [group, setGroup] = useState<GroupResponse | undefined>(props.group);
   const [groupVerificationCode, setGroupVerificationCode] = useState("");
 
   const [step, setStep] = useState<FormStep>("info");
@@ -197,11 +197,15 @@ export function CreateCompetitionForm(props: CreateCompetitionFormProps) {
                     </Button>
                     <Button
                       variant="blue"
-                      disabled={disabled}
+                      disabled={disabled || createMutation.isPending}
                       onClick={() => createMutation.mutate(competition)}
                     >
                       Next
-                      <ArrowRightIcon className="-mr-1.5 h-4 w-4" />
+                      {createMutation.isPending ? (
+                        <LoadingIcon className="-mr-1.5 h-4 w-4 animate-spin" />
+                      ) : (
+                        <ArrowRightIcon className="-mr-1.5 h-4 w-4" />
+                      )}
                     </Button>
                   </div>
                 )}
@@ -220,11 +224,15 @@ export function CreateCompetitionForm(props: CreateCompetitionFormProps) {
                     </Button>
                     <Button
                       variant="blue"
-                      disabled={disabled}
+                      disabled={disabled || createMutation.isPending}
                       onClick={() => createMutation.mutate(competition)}
                     >
                       Next
-                      <ArrowRightIcon className="-mr-1.5 h-4 w-4" />
+                      {createMutation.isPending ? (
+                        <LoadingIcon className="-mr-1.5 h-4 w-4 animate-spin" />
+                      ) : (
+                        <ArrowRightIcon className="-mr-1.5 h-4 w-4" />
+                      )}
                     </Button>
                   </div>
                 )}

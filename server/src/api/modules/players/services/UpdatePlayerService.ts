@@ -1,11 +1,20 @@
 import { AsyncResult, complete, errored, isErrored } from '@attio/fetchable';
 import { jobManager, JobType } from '../../../../jobs';
-import prisma, { Player, PlayerAnnotation, PrismaTypes, Snapshot } from '../../../../prisma';
-import { fetchHiscoresData, HiscoresError } from '../../../../services/jagex.service';
+import prisma, { PrismaTypes } from '../../../../prisma';
+import { fetchHiscoresJSON, HiscoresError } from '../../../../services/jagex.service';
 import { buildCompoundRedisKey, redisClient } from '../../../../services/redis.service';
-import { PlayerAnnotationType, PlayerStatus, PlayerType } from '../../../../utils';
+import {
+  Player,
+  PlayerAnnotation,
+  PlayerAnnotationType,
+  PlayerBuild,
+  PlayerStatus,
+  PlayerType,
+  Snapshot
+} from '../../../../types';
 import { eventEmitter, EventType } from '../../../events';
 import { computePlayerMetrics } from '../../efficiency/services/ComputePlayerMetricsService';
+import { buildHiscoresSnapshot } from '../../snapshots/services/BuildHiscoresSnapshot';
 import * as snapshotUtils from '../../snapshots/snapshot.utils';
 import {
   getBuild,
@@ -25,6 +34,24 @@ type UpdatablePlayerFields = PrismaTypes.XOR<
 
 let UPDATE_COOLDOWN = process.env.NODE_ENV === 'test' ? 0 : 60;
 
+async function acquireLock(
+  username: string
+): AsyncResult<() => Promise<number>, { code: 'LOCK_ALREADY_EXISTS' }> {
+  const lockRedisKey = buildCompoundRedisKey('player-update-lock', standardize(username));
+
+  const hasLock = await redisClient.get(lockRedisKey);
+
+  if (hasLock) {
+    return errored({ code: 'LOCK_ALREADY_EXISTS' });
+  }
+
+  await redisClient.set(lockRedisKey, 'true', 'PX', 60_000);
+
+  return complete(() => {
+    return redisClient.del(lockRedisKey);
+  });
+}
+
 async function updatePlayer(
   username: string,
   skipFlagChecks = false
@@ -38,29 +65,47 @@ async function updatePlayer(
   | { code: 'PLAYER_IS_RATE_LIMITED' }
   | { code: 'USERNAME_VALIDATION_ERROR'; subError: PlayerUsernameValidationError }
 > {
+  const lockResult = await acquireLock(username);
+
+  if (isErrored(lockResult)) {
+    return errored({ code: 'PLAYER_IS_RATE_LIMITED' });
+  }
+
+  const releaseLock = lockResult.value;
+
   // Find a player with the given username or create a new one if needed
   const findPlayerResult = await findOrCreate(username);
 
   if (isErrored(findPlayerResult)) {
+    await releaseLock();
+
     return findPlayerResult;
   }
 
   const { player, isNew } = findPlayerResult.value;
 
   if (player.annotations?.some(a => a.type === PlayerAnnotationType.OPT_OUT)) {
+    await releaseLock();
+
     return errored({ code: 'PLAYER_OPTED_OUT' });
   }
 
   if (player.annotations?.some(a => a.type === PlayerAnnotationType.BLOCKED)) {
+    await releaseLock();
+
     return errored({ code: 'PLAYER_IS_BLOCKED' });
   }
 
   if (player.status === PlayerStatus.ARCHIVED) {
+    await releaseLock();
+
     return errored({ code: 'PLAYER_IS_ARCHIVED' });
   }
 
   // If the player was updated recently, don't update it
   if (!shouldUpdate(player) && !isNew) {
+    await releaseLock();
+
     return errored({ code: 'PLAYER_IS_RATE_LIMITED' });
   }
 
@@ -71,6 +116,8 @@ async function updatePlayer(
     const typeAssertionResult = await assertPlayerType(player);
 
     if (isErrored(typeAssertionResult)) {
+      await releaseLock();
+
       return typeAssertionResult;
     }
 
@@ -91,12 +138,16 @@ async function updatePlayer(
         const typeReviewResult = await reviewType(player);
 
         if (isErrored(typeReviewResult)) {
+          await releaseLock();
+
           return typeReviewResult;
         }
 
         // If they did in fact change type, call this function recursively,
         // so that it fetches their stats from the correct hiscores.
         if (typeReviewResult.value.changed) {
+          await releaseLock();
+
           return updatePlayer(player.username);
         }
       }
@@ -107,6 +158,8 @@ async function updatePlayer(
         jobManager.add(JobType.CHECK_PLAYER_RANKED, { username: player.username });
       }
     }
+
+    await releaseLock();
 
     return currentStatsResult;
   }
@@ -119,8 +172,14 @@ async function updatePlayer(
       const handled = await handlePlayerFlagged(player, previousSnapshot, currentStats);
       // If the flag was properly handled (via a player archive),
       // call this function recursively, so that the new player can be tracked
-      if (handled) return updatePlayer(player.username);
+      if (handled) {
+        await releaseLock();
+
+        return updatePlayer(player.username);
+      }
     }
+
+    await releaseLock();
 
     return errored({ code: 'PLAYER_IS_FLAGGED' });
   }
@@ -136,7 +195,11 @@ async function updatePlayer(
 
     // If they did in fact de-iron, call this function recursively,
     // so that it fetches their stats from the correct hiscores.
-    if (hasTypeChanged) return updatePlayer(player.username);
+    if (hasTypeChanged) {
+      await releaseLock();
+
+      return updatePlayer(player.username);
+    }
   }
 
   // Refresh the player's build
@@ -150,7 +213,7 @@ async function updatePlayer(
     {
       id: player.id,
       type: updatedPlayerFields.type ?? player.type,
-      build: updatedPlayerFields.build ?? player.build
+      build: (updatedPlayerFields.build as PlayerBuild) ?? player.build
     },
     currentStats
   );
@@ -161,6 +224,9 @@ async function updatePlayer(
   updatedPlayerFields.ehb = computedMetrics.ehbValue;
   updatedPlayerFields.ttm = computedMetrics.ttm;
   updatedPlayerFields.tt200m = computedMetrics.tt200m;
+
+  updatedPlayerFields.sailing = currentStats.sailingExperience;
+  updatedPlayerFields.sailingRank = currentStats.sailingRank;
 
   // Add the computed metrics to the snapshot
   currentStats.ehpValue = computedMetrics.ehpValue;
@@ -173,8 +239,9 @@ async function updatePlayer(
     data: currentStats
   });
 
-  updatedPlayerFields.latestSnapshotId = newSnapshot.id;
   updatedPlayerFields.updatedAt = newSnapshot.createdAt;
+  updatedPlayerFields.latestSnapshotId = newSnapshot.id;
+  updatedPlayerFields.latestSnapshotDate = newSnapshot.createdAt;
 
   if (hasChanged) updatedPlayerFields.lastChangedAt = newSnapshot.createdAt;
 
@@ -189,6 +256,8 @@ async function updatePlayer(
     hasChanged,
     previousUpdatedAt: previousSnapshot?.createdAt ?? null
   });
+
+  await releaseLock();
 
   return complete({
     player: updatedPlayer,
@@ -262,18 +331,13 @@ async function fetchStats(
   type?: PlayerType,
   previousStats?: Snapshot
 ): AsyncResult<Snapshot, HiscoresError> {
-  // Load data from OSRS hiscors
-  const hiscoresCSVResult = await fetchHiscoresData(player.username, type || player.type);
+  const hiscoresResult = await fetchHiscoresJSON(player.username, type || player.type);
 
-  if (isErrored(hiscoresCSVResult)) {
-    return hiscoresCSVResult;
+  if (isErrored(hiscoresResult)) {
+    return hiscoresResult;
   }
 
-  const newSnapshot = await snapshotUtils.parseHiscoresSnapshot(
-    player.id,
-    hiscoresCSVResult.value,
-    previousStats
-  );
+  const newSnapshot = buildHiscoresSnapshot(player.id, hiscoresResult.value, previousStats);
 
   return complete(newSnapshot);
 }

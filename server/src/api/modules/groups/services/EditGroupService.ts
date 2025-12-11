@@ -1,13 +1,20 @@
-import prisma, { Membership, Player, PrismaTypes } from '../../../../prisma';
+import prisma, { PrismaTypes } from '../../../../prisma';
 import logger from '../../../../services/logging.service';
-import { GroupRole, NameChangeStatus, PlayerAnnotationType } from '../../../../utils';
-import { omit } from '../../../../utils/omit.util';
+import {
+  Group,
+  GroupRole,
+  MemberActivityType,
+  Membership,
+  NameChangeStatus,
+  Player,
+  PlayerAnnotationType
+} from '../../../../types';
+import { sanitizeWhitespace } from '../../../../utils/sanitize-whitespace.util';
+
 import { BadRequestError, ForbiddenError, ServerError } from '../../../errors';
 import { eventEmitter, EventType } from '../../../events';
 import { isValidUsername, sanitize, standardize } from '../../players/player.utils';
 import { findOrCreatePlayers } from '../../players/services/FindOrCreatePlayersService';
-import { ActivityType, GroupDetails } from '../group.types';
-import { buildDefaultSocialLinks, sanitizeName, sortMembers } from '../group.utils';
 
 // Only allow images from our Cloudflare R2 CDN, to make sure people don't
 // upload unresize, or uncompressed images. They musgt edit images on the website.
@@ -31,7 +38,7 @@ interface EditGroupPayload {
   roleOrders?: Array<{ role: GroupRole; index: number }>;
 }
 
-async function editGroup(groupId: number, payload: EditGroupPayload): Promise<GroupDetails> {
+async function editGroup(groupId: number, payload: EditGroupPayload): Promise<Group> {
   const {
     name,
     clanChat,
@@ -123,7 +130,7 @@ async function editGroup(groupId: number, payload: EditGroupPayload): Promise<Gr
   }
 
   if (name) {
-    const sanitizedName = sanitizeName(name);
+    const sanitizedName = sanitizeWhitespace(name);
 
     // Check for duplicate names
     const duplicateGroup = await prisma.group.findFirst({
@@ -138,7 +145,7 @@ async function editGroup(groupId: number, payload: EditGroupPayload): Promise<Gr
   }
 
   if (description) {
-    updatedGroupFields.description = description ? sanitizeName(description) : null;
+    updatedGroupFields.description = description ? sanitizeWhitespace(description) : null;
   }
 
   if (clanChat) {
@@ -157,12 +164,29 @@ async function editGroup(groupId: number, payload: EditGroupPayload): Promise<Gr
     .$transaction(async tx => {
       const transaction = tx as unknown as PrismaTypes.TransactionClient;
 
-      if (socialLinks) {
-        await updateSocialLinks(groupId, socialLinks, transaction);
+      if (socialLinks !== undefined) {
+        await transaction.groupSocialLinks.upsert({
+          where: {
+            groupId
+          },
+          create: {
+            groupId,
+            ...socialLinks
+          },
+          update: {
+            ...socialLinks
+          }
+        });
       }
 
-      if (roleOrders) {
-        await updateGroupRoleOrder(groupId, roleOrders, transaction);
+      if (roleOrders !== undefined) {
+        await transaction.groupRoleOrder.deleteMany({
+          where: { groupId }
+        });
+
+        await transaction.groupRoleOrder.createMany({
+          data: roleOrders.map(r => ({ ...r, groupId }))
+        });
       }
 
       await transaction.group.update({
@@ -201,15 +225,7 @@ async function editGroup(groupId: number, payload: EditGroupPayload): Promise<Gr
 
   eventEmitter.emit(EventType.GROUP_UPDATED, { groupId });
 
-  const sortedMemberships = sortMembers(updatedGroup.memberships, updatedGroup.roleOrders);
-
-  return {
-    ...omit(updatedGroup, 'verificationHash'),
-    socialLinks: updatedGroup.socialLinks[0] ?? buildDefaultSocialLinks(),
-    memberCount: sortedMemberships.length,
-    memberships: sortedMemberships,
-    roleOrders: updatedGroup.roleOrders
-  };
+  return updatedGroup;
 }
 
 async function updateMembers(groupId: number, members: Array<{ username: string; role: GroupRole }>) {
@@ -265,14 +281,14 @@ async function updateMembers(groupId: number, members: Array<{ username: string;
     groupId: number;
     playerId: number;
     role: GroupRole;
-    type: typeof ActivityType.LEFT;
+    type: typeof MemberActivityType.LEFT;
   }> = [];
 
   const joinedEvents: Array<{
     groupId: number;
     playerId: number;
     role: GroupRole;
-    type: typeof ActivityType.JOINED;
+    type: typeof MemberActivityType.JOINED;
   }> = [];
 
   const changedRoleEvents: Array<{
@@ -280,7 +296,7 @@ async function updateMembers(groupId: number, members: Array<{ username: string;
     playerId: number;
     role: GroupRole;
     previousRole: GroupRole;
-    type: typeof ActivityType.CHANGED_ROLE;
+    type: typeof MemberActivityType.CHANGED_ROLE;
   }> = [];
 
   // If any new group members are included in a name change request that is still pending
@@ -336,7 +352,7 @@ async function updateMembers(groupId: number, members: Array<{ username: string;
             groupId,
             playerId: m.playerId,
             role: m.role,
-            type: ActivityType.LEFT
+            type: MemberActivityType.LEFT
           }))
       );
 
@@ -351,7 +367,7 @@ async function updateMembers(groupId: number, members: Array<{ username: string;
             groupId,
             playerId: j.playerId,
             role: j.role,
-            type: ActivityType.JOINED
+            type: MemberActivityType.JOINED
           }))
       );
 
@@ -380,7 +396,7 @@ async function updateMembers(groupId: number, members: Array<{ username: string;
             playerId: id,
             role,
             previousRole: currentRoleMap.get(id)!,
-            type: ActivityType.CHANGED_ROLE
+            type: MemberActivityType.CHANGED_ROLE
           }))
         );
       }
@@ -419,31 +435,6 @@ async function updateMembers(groupId: number, members: Array<{ username: string;
       }))
     });
   }
-}
-
-async function updateSocialLinks(
-  groupId: number,
-  socialLinks: NonNullable<EditGroupPayload['socialLinks']>,
-  transaction: PrismaTypes.TransactionClient
-) {
-  const existingId = await prisma.$queryRaw<{ id: number }[]>`
-    SELECT "id" FROM public."groupSocialLinks" WHERE "groupId" = ${groupId} LIMIT 1
-  `.then(rows => {
-    return rows && Array.isArray(rows) && rows.length > 0 ? rows[0].id : null;
-  });
-
-  if (!existingId) {
-    await transaction.groupSocialLinks.create({
-      data: { ...socialLinks, groupId }
-    });
-
-    return;
-  }
-
-  await transaction.groupSocialLinks.update({
-    where: { id: existingId },
-    data: socialLinks
-  });
 }
 
 async function removeExcessMemberships(
@@ -545,17 +536,3 @@ function calculateRoleChangeMaps(
 }
 
 export { editGroup };
-
-async function updateGroupRoleOrder(
-  groupId: number,
-  roleOrders: Array<{ role: GroupRole; index: number }>,
-  transaction: PrismaTypes.TransactionClient
-) {
-  await transaction.groupRoleOrder.deleteMany({
-    where: { groupId }
-  });
-
-  await transaction.groupRoleOrder.createMany({
-    data: roleOrders.map(x => ({ ...x, groupId: groupId }))
-  });
-}

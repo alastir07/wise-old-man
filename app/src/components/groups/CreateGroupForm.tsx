@@ -3,13 +3,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { ColumnDef } from "@tanstack/react-table";
 import { useRouter } from "next/navigation";
-import {
-  CreateGroupPayload,
-  GROUP_ROLES,
-  GroupMemberFragment,
-  GroupRole,
-  GroupRoleProps,
-} from "@wise-old-man/utils";
+import { CreateGroupPayload, GROUP_ROLES, GroupRole, GroupRoleProps } from "@wise-old-man/utils";
 import Link from "next/link";
 import { cn } from "~/utils/styling";
 import { useToast } from "~/hooks/useToast";
@@ -37,11 +31,17 @@ import { EmptyGroupDialog } from "~/components/groups/EmptyGroupDialog";
 import { SaveGroupVerificationCodeDialog } from "~/components/groups/SaveGroupVerificationCodeDialog";
 import { standardizeUsername } from "~/utils/strings";
 
+import LoadingIcon from "~/assets/loading.svg";
 import ArrowRightIcon from "~/assets/arrow_right.svg";
 import ChevronDownIcon from "~/assets/chevron_down.svg";
 
 type FormStep = "info" | "import" | "members";
 type ImportSource = "none" | "file";
+
+interface MemberFragment {
+  username: string;
+  role?: GroupRole;
+}
 
 const CreateGroupContext = createContext({
   step: "info" as FormStep,
@@ -93,7 +93,7 @@ export function CreateGroupForm() {
     },
   });
 
-  function handleSubmitMembers(members: GroupMemberFragment[]) {
+  function handleSubmitMembers(members: MemberFragment[]) {
     const newPayload = { ...payload, members };
     setPayload(newPayload);
 
@@ -182,8 +182,9 @@ export function CreateGroupForm() {
               </div>
               <GroupMembersForm
                 payload={payload}
+                isPending={createMutation.isPending}
                 onSubmit={handleSubmitMembers}
-                onSave={(members: GroupMemberFragment[]) => {
+                onSave={(members: MemberFragment[]) => {
                   setPayload({ ...payload, members });
                 }}
               />
@@ -270,17 +271,18 @@ function GroupImportOptions() {
 
 interface GroupMembersFormProps {
   payload: CreateGroupPayload;
-  onSave: (members: GroupMemberFragment[]) => void;
-  onSubmit: (members: GroupMemberFragment[]) => void;
+  isPending: boolean;
+  onSave: (members: MemberFragment[]) => void;
+  onSubmit: (members: MemberFragment[]) => void;
 }
 
 function GroupMembersForm(props: GroupMembersFormProps) {
-  const { payload, onSubmit, onSave } = props;
+  const { payload, isPending, onSubmit, onSave } = props;
 
   const { importSource, showingImportDialog, setShowingImportDialog, setStep, setImportSource } =
     useContext(CreateGroupContext);
 
-  const [members, setMembers] = useState<GroupMemberFragment[]>(payload?.members || []);
+  const [members, setMembers] = useState<MemberFragment[]>(payload?.members || []);
 
   function handleAddPlayers(usernames: string) {
     // Handle comma separated usernames
@@ -346,9 +348,13 @@ function GroupMembersForm(props: GroupMembersFormProps) {
             <ArrowRightIcon className="-ml-1.5 h-4 w-4 -rotate-180" />
             Previous
           </Button>
-          <Button variant="blue" onClick={() => onSubmit(members)}>
+          <Button variant="blue" disabled={isPending} onClick={() => onSubmit(members)}>
             Next
-            <ArrowRightIcon className="-mr-1.5 h-4 w-4" />
+            {isPending ? (
+              <LoadingIcon className="-mr-1.5 h-4 w-4 animate-spin" />
+            ) : (
+              <ArrowRightIcon className="-mr-1.5 h-4 w-4" />
+            )}
           </Button>
         </div>
       </div>
@@ -373,7 +379,7 @@ function getColumnDefinitions(
   onRemoveClicked: (username: string) => void,
   onRoleChanged: (username: string, role: GroupRole) => void
 ) {
-  const MEMBERS_COLUMN_DEFS: ColumnDef<GroupMemberFragment>[] = [
+  const MEMBERS_COLUMN_DEFS: ColumnDef<MemberFragment>[] = [
     {
       accessorKey: "username",
       header: "Player",

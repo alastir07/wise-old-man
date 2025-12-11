@@ -1,0 +1,59 @@
+name: (Server) Production Deployment
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "server/**"
+
+jobs:
+  build-server-image:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get current npm version
+        id: package-version
+        uses: martinbeentjes/npm-get-version-action@main
+        with:
+          path: server
+
+      - name: Login to Docker Hub
+        run: docker login -u ${{ secrets.ORG_DOCKER_USERNAME }} -p ${{ secrets.ORG_DOCKER_PASSWORD }}
+
+      - name: Build Docker Images and Push To Docker Hub
+        run: |
+          cd server
+          docker build . -f Dockerfile -t wiseoldman/server:latest -t wiseoldman/server:${{steps.package-version.outputs.current-version}}
+          docker push -a wiseoldman/server
+  deploy:
+    name: Pull & Restart Docker Container
+    needs: [build-server-image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Migrate DB & Restart Server Containers
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          script: |
+            cd wise-old-man
+
+            # Remove the old image before pulling the new one
+            docker image rm wiseoldman/server
+
+            # Pull the latest server image
+            docker pull wiseoldman/server:latest
+
+            # Migrate the database to the latest Prisma schema
+            docker run --rm \
+              --env-file .env \
+              --network wise-old-man_generic-network \
+              wiseoldman/server:latest npx prisma migrate deploy
+
+            # Restart the server containers
+            docker compose up -d --no-deps --build server-api server-job-runner server-bull-board

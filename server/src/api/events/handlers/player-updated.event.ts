@@ -1,5 +1,6 @@
-import { jobManager, JobType } from '../../../jobs';
-import { PeriodProps, PERIODS } from '../../../utils';
+import { jobManager, JobPriority, JobType } from '../../../jobs';
+import { Period, PERIODS } from '../../../types';
+import { PeriodProps } from '../../../utils/shared';
 import { EventPayloadMap } from '../types/event-payload.type';
 import { EventType } from '../types/event-type.enum';
 
@@ -18,7 +19,11 @@ export function handler({
         continue;
       }
 
-      jobManager.add(JobType.SYNC_PLAYER_DELTAS, { username, period });
+      jobManager.add(
+        JobType.SYNC_PLAYER_DELTAS,
+        { username, period },
+        { priority: period === Period.YEAR ? JobPriority.LOW : JobPriority.MEDIUM }
+      );
     }
   }
 

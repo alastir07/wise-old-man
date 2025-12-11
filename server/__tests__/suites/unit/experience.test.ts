@@ -1,25 +1,25 @@
-import { Snapshot } from '../../../src/prisma';
 import {
-  isF2p,
-  isLvl3,
+  get200msCount,
+  getCappedExp,
+  getCombatLevelFromSnapshot,
+  getMinimumExp,
+  getTotalLevel,
   is10HP,
   is1Def,
-  isZerker,
-  get200msCount,
-  getMinimumExp,
-  getCappedExp,
-  getTotalLevel,
-  getCombatLevelFromSnapshot
+  isF2p,
+  isLvl3,
+  isZerker
 } from '../../../src/api/modules/snapshots/snapshot.utils';
+import { SKILLS, Snapshot } from '../../../src/types';
+import { getMetricValueKey } from '../../../src/utils/get-metric-value-key.util';
 import {
-  SKILLS,
-  getMetricValueKey,
-  getLevel,
+  getCombatLevel,
   getExpForLevel,
-  SKILL_EXP_AT_99,
+  getLevel,
   MAX_SKILL_EXP,
-  getCombatLevel
-} from '../../../src/utils';
+  REAL_SKILLS,
+  SKILL_EXP_AT_99
+} from '../../../src/utils/shared';
 
 describe('Util - Experience', () => {
   test('getExpForLevel', () => {
@@ -288,7 +288,7 @@ describe('Util - Experience', () => {
         } as Snapshot,
         5000
       )
-    ).toBe(23 * 5000);
+    ).toBe(REAL_SKILLS.length * 5000);
 
     expect(
       getCappedExp(
@@ -300,7 +300,7 @@ describe('Util - Experience', () => {
         } as Snapshot,
         5000
       )
-    ).toBe(21 * 5000 + 1234 + 4897);
+    ).toBe(22 * 5000 + 1234 + 4897);
   });
 
   test('getTotalLevel', () => {
@@ -309,14 +309,14 @@ describe('Util - Experience', () => {
         ...Object.fromEntries(SKILLS.map(s => [getMetricValueKey(s), 110_000])),
         attackExperience: 1
       } as Snapshot)
-    ).toBe(22 * 50 + 1);
+    ).toBe(23 * 50 + 1);
 
     expect(
       getTotalLevel({
         ...Object.fromEntries(SKILLS.map(s => [getMetricValueKey(s), 0])),
         hitpointsExperience: 1154
       } as Snapshot)
-    ).toBe(32);
+    ).toBe(23 + 10); // 1 everything, 10 hp
 
     expect(
       getTotalLevel({
@@ -324,18 +324,41 @@ describe('Util - Experience', () => {
         hitpointsExperience: 110_000,
         woodcuttingExperience: 5_346_332
       } as Snapshot)
-    ).toBe(21 * 99 + 50 + 90);
+    ).toBe(22 * 99 + 50 + 90);
 
     expect(
       getTotalLevel(
         Object.fromEntries(SKILLS.map(s => [getMetricValueKey(s), MAX_SKILL_EXP])) as unknown as Snapshot
       )
-    ).toBe(2277);
+    ).toBe(REAL_SKILLS.length * 99);
 
     expect(
       getTotalLevel(
         Object.fromEntries(SKILLS.map(s => [getMetricValueKey(s), SKILL_EXP_AT_99])) as unknown as Snapshot
       )
-    ).toBe(2277);
+    ).toBe(REAL_SKILLS.length * 99);
+
+    expect(
+      getTotalLevel({
+        attackExperience: MAX_SKILL_EXP,
+        strengthExperience: MAX_SKILL_EXP
+      } as Snapshot)
+    ).toBe(229); // 99 attack + 99 strength + 10 hitpoints + 1 all other skills
+
+    expect(
+      getTotalLevel({
+        overallLevel: 200, // lower than the computed total level
+        attackExperience: MAX_SKILL_EXP,
+        strengthExperience: MAX_SKILL_EXP
+      } as Snapshot)
+    ).toBe(229);
+
+    expect(
+      getTotalLevel({
+        overallLevel: 277, // higher than the computed total level
+        attackExperience: MAX_SKILL_EXP,
+        strengthExperience: MAX_SKILL_EXP
+      } as Snapshot)
+    ).toBe(277);
   });
 });

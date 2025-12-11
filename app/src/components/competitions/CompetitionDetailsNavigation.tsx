@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { Tabs, TabsList, TabsTrigger } from "../Tabs";
 import { usePathname, useSearchParams } from "next/navigation";
-import { CompetitionDetails, CompetitionType } from "@wise-old-man/utils";
+import { CompetitionDetailsResponse, CompetitionType } from "@wise-old-man/utils";
 
 interface CompetitionDetailsNavigationProps {
-  competition: CompetitionDetails;
+  competition: CompetitionDetailsResponse;
 }
 
 const TABS = [
@@ -47,7 +47,7 @@ export function CompetitionDetailsNavigation(props: CompetitionDetailsNavigation
             if (previewMetric) url += `?preview=${previewMetric}`;
 
             return (
-              <Link prefetch={false} href={url} key={tab.route}>
+              <Link prefetch={false} href={url} rel="nofollow" key={tab.route}>
                 <TabsTrigger value={tab.route}>{tab.label}</TabsTrigger>
               </Link>
             );

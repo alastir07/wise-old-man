@@ -2,8 +2,8 @@
  * This file has been created as a way to force any usage
  * of process.env to go through a dotenv.config first.
  */
-import { z } from 'zod';
 import 'dotenv/config';
+import { z } from 'zod';
 
 /**
  * This ensures that an env var is required in prod but optional in dev/test.
@@ -16,6 +16,12 @@ function prodOnly<T extends z.ZodTypeAny>(varSchema: T) {
   return z.optional(varSchema);
 }
 
+export enum ServerType {
+  API = 'api',
+  JOB_RUNNER = 'job-runner',
+  BULL_BOARD = 'bull-board'
+}
+
 const envVariablesSchema = z.object({
   // Prisma Database URL
   CORE_DATABASE_URL: z.string().trim().min(1),
@@ -24,6 +30,8 @@ const envVariablesSchema = z.object({
   REDIS_PORT: z.coerce.number().positive().int(),
   // Node Environment
   NODE_ENV: z.enum(['development', 'production', 'test']),
+  // Service Name (which runtime service is running)
+  SERVER_TYPE: prodOnly(z.nativeEnum(ServerType)),
   // Port for the API to run on
   API_PORT: z.optional(z.coerce.number().positive().int()),
   // Admin Password (For mod+ operations)
@@ -40,13 +48,18 @@ const envVariablesSchema = z.object({
   DISCORD_PATREON_WEBHOOK_URL: prodOnly(z.string().trim().min(1).url()),
   DISCORD_MONITORING_WEBHOOK_URL: prodOnly(z.string().trim().min(1).url()),
   // Proxy Configs
-  PROXY_LIST: prodOnly(z.string().trim().min(1)),
-  PROXY_USER: prodOnly(z.string().trim().min(1)),
-  PROXY_PASSWORD: prodOnly(z.string().trim().min(1)),
-  PROXY_PORT: prodOnly(z.coerce.number().positive().int()),
+  PROXY_LIST: z.optional(z.string().trim().min(1)),
+  PROXY_USER: z.optional(z.string().trim().min(1)),
+  PROXY_PASSWORD: z.optional(z.string().trim().min(1)),
+  PROXY_PORT: z.optional(z.coerce.number().positive().int()),
   CPU_COUNT: prodOnly(z.coerce.number().positive().int()),
   // Openai API Key
-  OPENAI_API_KEY: prodOnly(z.string().trim().min(1).startsWith('sk-'))
+  OPENAI_API_KEY: prodOnly(z.string().trim().min(1).startsWith('sk-')),
+  // Abuse Protection Configs
+  API_ABUSE_PROTECTED_PLAYERS_URL: z.optional(z.string().trim().url()),
+  API_ABUSE_PROTECTED_PLAYERS_LIST: z.optional(z.string().trim()),
+  // Feature Flags
+  API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS: z.optional(z.string())
 });
 
 // This will load env vars from a .env file, type check them,and throw an error
@@ -63,7 +76,7 @@ type EnvSchemaType = z.infer<typeof envVariablesSchema>;
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace NodeJS {
-    // eslint-disable-next-line @typescript-eslint/no-empty-interface
+    // eslint-disable-next-line @typescript-eslint/no-empty-object-type
     interface ProcessEnv extends EnvSchemaType {}
   }
 }

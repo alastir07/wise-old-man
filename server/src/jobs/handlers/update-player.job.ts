@@ -16,6 +16,10 @@ export class UpdatePlayerJob extends Job<Payload> {
     rateLimiter: { max: 1, duration: 250 }
   };
 
+  static getUniqueJobId(payload: Payload) {
+    return payload.username;
+  }
+
   async execute(payload: Payload): Promise<void> {
     if (process.env.NODE_ENV === 'test') {
       return;
@@ -28,6 +32,8 @@ export class UpdatePlayerJob extends Job<Payload> {
     }
 
     switch (updateResult.error.code) {
+      case 'PLAYER_IS_RATE_LIMITED':
+        return;
       case 'PLAYER_OPTED_OUT':
       case 'PLAYER_IS_FLAGGED':
       case 'PLAYER_IS_BLOCKED':
@@ -39,7 +45,6 @@ export class UpdatePlayerJob extends Job<Payload> {
         await redisClient.set(cooldownKey, 'true', 'PX', 86_400_000); // 24 hours
         break;
       }
-      case 'PLAYER_IS_RATE_LIMITED':
       case 'HISCORES_UNEXPECTED_ERROR':
       case 'HISCORES_SERVICE_UNAVAILABLE': {
         // These can be retried later

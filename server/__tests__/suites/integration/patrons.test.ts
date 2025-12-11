@@ -1,24 +1,22 @@
 import axios from 'axios';
-import supertest from 'supertest';
 import MockAdapter from 'axios-mock-adapter';
-import apiServer from '../../../src/api';
-import prisma from '../../../src/prisma';
-import { PlayerType } from '../../../src/utils';
-import { readFile, registerHiscoresMock, resetDatabase } from '../../utils';
-import { redisClient } from '../../../src/services/redis.service';
+import supertest from 'supertest';
+import APIInstance from '../../../src/api';
 import { eventEmitter } from '../../../src/api/events';
+import prisma from '../../../src/prisma';
+import { redisClient } from '../../../src/services/redis.service';
+import { PlayerType } from '../../../src/types';
+import { readFile, registerHiscoresMock, resetDatabase } from '../../utils';
 
-const api = supertest(apiServer.express);
+const api = supertest(new APIInstance().init().express);
 const axiosMock = new MockAdapter(axios, { onNoMatch: 'passthrough' });
-
-const HISCORES_FILE_PATH = `${__dirname}/../../data/hiscores/psikoi_hiscores.txt`;
 
 beforeAll(async () => {
   eventEmitter.init();
   await redisClient.flushall();
   await resetDatabase();
 
-  const hiscoresRawData = await readFile(HISCORES_FILE_PATH);
+  const hiscoresRawData = await readFile(`${__dirname}/../../data/hiscores/psikoi_hiscores.json`);
 
   // Mock regular hiscores data, and block any ironman requests
   registerHiscoresMock(axiosMock, {

@@ -1,17 +1,15 @@
 import axios from 'axios';
-import supertest from 'supertest';
 import MockAdapter from 'axios-mock-adapter';
-import apiServer from '../../../src/api';
-import prisma from '../../../src/prisma';
-import { PlayerType, Metric } from '../../../src/utils';
-import { registerHiscoresMock, resetDatabase, readFile, modifyRawHiscoresData, sleep } from '../../utils';
-import { redisClient } from '../../../src/services/redis.service';
+import supertest from 'supertest';
+import APIInstance from '../../../src/api';
 import { eventEmitter } from '../../../src/api/events';
+import prisma from '../../../src/prisma';
+import { redisClient } from '../../../src/services/redis.service';
+import { Metric, PlayerType } from '../../../src/types';
+import { modifyRawHiscoresData, readFile, registerHiscoresMock, resetDatabase, sleep } from '../../utils';
 
-const api = supertest(apiServer.express);
+const api = supertest(new APIInstance().init().express);
 const axiosMock = new MockAdapter(axios, { onNoMatch: 'passthrough' });
-
-const HISCORES_FILE_PATH = `${__dirname}/../../data/hiscores/psikoi_hiscores.txt`;
 
 const globalData = {
   hiscoresRawData: '',
@@ -24,7 +22,7 @@ beforeAll(async () => {
   await resetDatabase();
   await redisClient.flushall();
 
-  globalData.hiscoresRawData = await readFile(HISCORES_FILE_PATH);
+  globalData.hiscoresRawData = await readFile(`${__dirname}/../../data/hiscores/psikoi_hiscores.json`);
 
   // Mock regular hiscores data, and block any ironman requests
   registerHiscoresMock(axiosMock, {
@@ -53,7 +51,7 @@ describe('Records API', () => {
       jest.useRealTimers();
 
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.SMITHING, value: 6_177_978 + 50_000 }
+        { hiscoresMetricName: 'Smithing', value: 6_177_978 + 50_000 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -81,7 +79,7 @@ describe('Records API', () => {
 
     it('should replace & create player records (day, five_min)', async () => {
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.SMITHING, value: 6_177_978 + 50_000 + 20_000 }
+        { hiscoresMetricName: 'Smithing', value: 6_177_978 + 50_000 + 20_000 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -127,7 +125,7 @@ describe('Records API', () => {
       });
 
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.ZULRAH, value: 1646 + 10 }
+        { hiscoresMetricName: 'Zulrah', value: 1646 + 10 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -160,7 +158,7 @@ describe('Records API', () => {
       expect(firstTrackResponse.body.latestSnapshot.data.bosses.zulrah.kills).toBe(1646);
 
       let modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.COLLECTIONS_LOGGED, value: 623 }
+        { hiscoresMetricName: 'Collections Logged', value: 623 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -179,7 +177,7 @@ describe('Records API', () => {
       expect(firstRecordsResponse.body.length).toBe(0);
 
       modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.COLLECTIONS_LOGGED, value: 627 }
+        { hiscoresMetricName: 'Collections Logged', value: 627 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -215,7 +213,9 @@ describe('Records API', () => {
     });
 
     it('should not fetch records (invalid metric)', async () => {
-      const response = await api.get(`/players/psikoi/records`).query({ metric: 'sailing' });
+      const response = await api.get(`/players/psikoi/records`).query({
+        metric: 'dungeoneering'
+      });
 
       expect(response.status).toBe(400);
       expect(response.body.message).toBe("Invalid enum value for 'metric'.");
@@ -330,8 +330,8 @@ describe('Records API', () => {
 
       // Add zulrah and smithing gains
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.ZULRAH, value: 1646 + 7 },
-        { metric: Metric.SMITHING, value: 6_177_978 + 1337 }
+        { hiscoresMetricName: 'Zulrah', value: 1646 + 7 },
+        { hiscoresMetricName: 'Smithing', value: 6_177_978 + 1337 }
       ]);
 
       // Mock the hiscores to mark the next tracked player as a regular ironman (and modified data)
@@ -496,8 +496,8 @@ describe('Records API', () => {
 
       // Add zulrah and smithing gains
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.ZULRAH, value: 1646 + 70 },
-        { metric: Metric.SMITHING, value: 6_177_978 + 620_000 }
+        { hiscoresMetricName: 'Zulrah', value: 1646 + 70 },
+        { hiscoresMetricName: 'Smithing', value: 6_177_978 + 620_000 }
       ]);
 
       // Mock the hiscores to mark the next tracked player as a regular ironman (and modified data)

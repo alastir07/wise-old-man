@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { cn } from "~/utils/styling";
 import { useMutation } from "@tanstack/react-query";
-import { CompetitionListItem } from "@wise-old-man/utils";
+import { CompetitionResponse } from "@wise-old-man/utils";
 import { useToast } from "~/hooks/useToast";
 import { useWOMClient } from "~/hooks/useWOMClient";
 import { Input } from "../Input";
@@ -18,7 +18,7 @@ import CheckIcon from "~/assets/check.svg";
 
 interface CompetitionVerificationCodeCheckDialogProps {
   isOpen: boolean;
-  competition: CompetitionListItem;
+  competition: CompetitionResponse;
   onValidated: (code: string) => void;
 }
 
@@ -97,7 +97,9 @@ export function CompetitionVerificationCodeCheckDialog(
               </>
             ) : (
               <>
-                <Label className="text-xs font-normal text-gray-200">Verification code</Label>
+                <Label className="text-xs font-normal text-gray-200" htmlFor="verificationCode">
+                  Verification code
+                </Label>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span>
@@ -120,6 +122,7 @@ export function CompetitionVerificationCodeCheckDialog(
             )}
           </div>
           <Input
+            id="verificationCode"
             type="password"
             autoFocus
             name="verificationCode"

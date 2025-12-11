@@ -1,25 +1,22 @@
 import axios from 'axios';
 import MockAdapter from 'axios-mock-adapter';
 import supertest from 'supertest';
-import apiServer from '../../../src/api';
+import APIInstance from '../../../src/api';
 import { eventEmitter } from '../../../src/api/events';
 import * as GroupMembersJoinedEvent from '../../../src/api/events/handlers/group-members-joined.event';
 import * as GroupMembersLeftEvent from '../../../src/api/events/handlers/group-members-left.event';
 import * as GroupMembersRolesChangedEvent from '../../../src/api/events/handlers/group-members-roles-changed.event';
 import prisma from '../../../src/prisma';
 import { redisClient } from '../../../src/services/redis.service';
-import { PlayerAnnotationType, PlayerType } from '../../../src/utils';
+import { PlayerAnnotationType, PlayerType } from '../../../src/types';
 import { modifyRawHiscoresData, readFile, registerHiscoresMock, resetDatabase } from '../../utils';
 
-const api = supertest(apiServer.express);
+const api = supertest(new APIInstance().init().express);
 const axiosMock = new MockAdapter(axios, { onNoMatch: 'passthrough' });
 
 const groupMembersLeftEvent = jest.spyOn(GroupMembersLeftEvent, 'handler');
 const groupMembersJoinedEvent = jest.spyOn(GroupMembersJoinedEvent, 'handler');
 const groupMembersRolesChangedEvent = jest.spyOn(GroupMembersRolesChangedEvent, 'handler');
-
-const P_HISCORES_FILE_PATH = `${__dirname}/../../data/hiscores/psikoi_hiscores.txt`;
-const LT_HISCORES_FILE_PATH = `${__dirname}/../../data/hiscores/lynx_titan_hiscores.txt`;
 
 const globalData = {
   pHiscoresRawData: '',
@@ -58,8 +55,8 @@ beforeAll(async () => {
   await resetDatabase();
   await redisClient.flushall();
 
-  globalData.pHiscoresRawData = await readFile(P_HISCORES_FILE_PATH);
-  globalData.ltHiscoresRawData = await readFile(LT_HISCORES_FILE_PATH);
+  globalData.pHiscoresRawData = await readFile(`${__dirname}/../../data/hiscores/psikoi_hiscores.json`);
+  globalData.ltHiscoresRawData = await readFile(`${__dirname}/../../data/hiscores/lynx_titan_hiscores.json`);
 
   // Mock regular hiscores data, and block any ironman requests
   registerHiscoresMock(axiosMock, {
@@ -243,7 +240,7 @@ describe('Group API', () => {
 
     it('should create (no members)', async () => {
       const response = await api.post('/groups').send({
-        name: ' Some Group_',
+        name: ' Some   Group',
         description: 'Test123',
         clanChat: ' Test ',
         homeworld: 492,
@@ -273,7 +270,7 @@ describe('Group API', () => {
 
     it('should create (members w/ default roles)', async () => {
       const response = await api.post('/groups').send({
-        name: ' heyy_',
+        name: ' heyy    ',
         members: [
           { username: '  Test_Player' },
           { username: '  ALT PLAYER' },
@@ -478,7 +475,7 @@ describe('Group API', () => {
     it('should not edit (name already taken)', async () => {
       const response = await api.put(`/groups/${globalData.testGroupNoMembers.id}`).send({
         verificationCode: globalData.testGroupNoMembers.verificationCode,
-        name: ` ${globalData.testGroupNoLeaders.name}__`
+        name: ` ${globalData.testGroupNoLeaders.name}  `
       });
 
       expect(response.status).toBe(400);
@@ -935,7 +932,7 @@ describe('Group API', () => {
     it('should edit name', async () => {
       const response = await api.put(`/groups/${globalData.testGroupOneLeader.id}`).send({
         verificationCode: globalData.testGroupOneLeader.verificationCode,
-        name: '__New name! '
+        name: '  New name! '
       });
 
       expect(response.status).toBe(200);
@@ -974,7 +971,7 @@ describe('Group API', () => {
 
     it('should edit name (capitalization)', async () => {
       const response = await api.put(`/groups/${globalData.testGroupOneLeader.id}`).send({
-        name: ` ${globalData.testGroupOneLeader.name.toUpperCase()}__`,
+        name: ` ${globalData.testGroupOneLeader.name.toUpperCase()}  `,
         verificationCode: globalData.testGroupOneLeader.verificationCode
       });
 
@@ -2478,7 +2475,7 @@ describe('Group API', () => {
     it('should not view hiscores (invalid metric)', async () => {
       const response = await api
         .get(`/groups/${globalData.testGroupOneLeader.id}/hiscores`)
-        .query({ metric: 'sailing' });
+        .query({ metric: 'dungeoneering' });
 
       expect(response.status).toBe(400);
       expect(response.body.message).toBe("Invalid enum value for 'metric'.");
@@ -2498,8 +2495,8 @@ describe('Group API', () => {
       expect(trackResponse.status).toBe(200);
 
       const modifiedRawData = modifyRawHiscoresData(globalData.pHiscoresRawData, [
-        { metric: 'zulrah', value: 100 },
-        { metric: 'magic', value: 5_500_000 }
+        { hiscoresMetricName: 'Zulrah', value: 100 },
+        { hiscoresMetricName: 'Magic', value: 5_500_000 }
       ]);
 
       // Change the mock hiscores data to return 100 zulrah kc
@@ -2735,7 +2732,7 @@ describe('Group API', () => {
       expect(response.body).toMatchObject({
         maxedCombatCount: 1,
         maxedTotalCount: 1,
-        maxed200msCount: 23,
+        maxed200msCount: 24,
         averageStats: {
           data: {
             bosses: {

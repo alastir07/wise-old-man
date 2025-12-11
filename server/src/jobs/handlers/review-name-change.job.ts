@@ -4,7 +4,7 @@ import { denyNameChange } from '../../api/modules/name-changes/services/DenyName
 import { fetchNameChangeDetails } from '../../api/modules/name-changes/services/FetchNameChangeDetailsService';
 import * as playerUtils from '../../api/modules/players/player.utils';
 import prisma from '../../prisma';
-import { Metric, NameChange, NameChangeStatus, SkipContext } from '../../utils';
+import { Metric, NameChange, NameChangeSkipContext, NameChangeStatus } from '../../types';
 import { Job } from '../job.class';
 import { JobOptions } from '../types/job-options.type';
 
@@ -17,8 +17,19 @@ interface Payload {
 
 export class ReviewNameChangeJob extends Job<Payload> {
   static options: JobOptions = {
-    rateLimiter: { max: 1, duration: 5000 }
+    rateLimiter: {
+      max: 1,
+      duration: 5000
+    },
+    backoff: {
+      type: 'exponential',
+      delay: 30_000
+    }
   };
+
+  static getUniqueJobId(payload: Payload) {
+    return payload.nameChangeId.toString();
+  }
 
   async execute(payload: Payload) {
     if (process.env.NODE_ENV === 'test') {
@@ -168,7 +179,7 @@ async function getBundleModifier(nameChange: NameChange): Promise<number> {
   return approvedRate >= 0.5 ? BOOSTED_MODIFIER : REGULAR_MODIFIER;
 }
 
-async function skipReview(id: number, skipContext: SkipContext) {
+async function skipReview(id: number, skipContext: NameChangeSkipContext) {
   await prisma.nameChange.update({
     where: { id },
     data: { reviewContext: skipContext }

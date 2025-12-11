@@ -1,22 +1,19 @@
 import axios from 'axios';
-import supertest from 'supertest';
 import MockAdapter from 'axios-mock-adapter';
-import apiServer from '../../../src/api';
-import { Achievement, Metric, PlayerType, SKILL_EXP_AT_99 } from '../../../src/utils';
-import { ACHIEVEMENT_TEMPLATES } from '../../../src/api/modules/achievements/achievement.templates';
-import { registerHiscoresMock, resetDatabase, sleep, readFile, modifyRawHiscoresData } from '../../utils';
-import { redisClient } from '../../../src/services/redis.service';
+import supertest from 'supertest';
+import APIInstance from '../../../src/api';
 import { eventEmitter } from '../../../src/api/events';
 import * as PlayerAchievementsCreatedEvent from '../../../src/api/events/handlers/player-achievements-created.event';
+import { ACHIEVEMENT_TEMPLATES } from '../../../src/api/modules/achievements/achievement.templates';
+import { redisClient } from '../../../src/services/redis.service';
+import { Achievement, Metric, PlayerType } from '../../../src/types';
+import { SKILL_EXP_AT_99 } from '../../../src/utils/shared';
+import { modifyRawHiscoresData, readFile, registerHiscoresMock, resetDatabase, sleep } from '../../utils';
 
-const api = supertest(apiServer.express);
+const api = supertest(new APIInstance().init().express);
 const axiosMock = new MockAdapter(axios, { onNoMatch: 'passthrough' });
 
 const playerAchievementsCreatedEvent = jest.spyOn(PlayerAchievementsCreatedEvent, 'handler');
-
-const ACHIEVEMENTS_FILE_PATH = `${__dirname}/../../data/achievements/psikoi_achievements.json`;
-const HISCORES_FILE_PATH_A = `${__dirname}/../../data/hiscores/psikoi_hiscores.txt`;
-const HISCORES_FILE_PATH_B = `${__dirname}/../../data/hiscores/lynx_titan_hiscores.txt`;
 
 const globalData = {
   testPlayerId: -1,
@@ -37,9 +34,12 @@ beforeAll(async () => {
   await resetDatabase();
   await redisClient.flushall();
 
-  globalData.hiscoresRawDataA = await readFile(HISCORES_FILE_PATH_A);
-  globalData.hiscoresRawDataB = await readFile(HISCORES_FILE_PATH_B);
-  globalData.expectedAchievements = JSON.parse(await readFile(ACHIEVEMENTS_FILE_PATH)) as Achievement[];
+  globalData.hiscoresRawDataA = await readFile(`${__dirname}/../../data/hiscores/psikoi_hiscores.json`);
+  globalData.hiscoresRawDataB = await readFile(`${__dirname}/../../data/hiscores/lynx_titan_hiscores.json`);
+
+  globalData.expectedAchievements = JSON.parse(
+    await readFile(`${__dirname}/../../data/achievements/psikoi_achievements.json`)
+  ) as Achievement[];
 
   // Mock regular hiscores data, and block any ironman requests
   registerHiscoresMock(axiosMock, {
@@ -68,7 +68,7 @@ describe('Achievements API', () => {
 
     test('Track Player (first time, all achievements (unknown dates))', async () => {
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawDataA, [
-        { metric: Metric.GUARDIANS_OF_THE_RIFT, value: 50 }
+        { hiscoresMetricName: 'Rifts closed', value: 50 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -109,7 +109,7 @@ describe('Achievements API', () => {
     test('Track Player (second time, no new achievements)', async () => {
       // Force some gains (+1 GOTR) so that achievements sync is triggered
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawDataA, [
-        { metric: Metric.GUARDIANS_OF_THE_RIFT, value: 51 }
+        { hiscoresMetricName: 'Rifts closed', value: 51 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -185,17 +185,33 @@ describe('Achievements API', () => {
         relativeProgress: 0 // 0% done between 5k and 10k kc - ((1773 - 1000) / (5000 - 1000)) <= 0
       });
 
+      expect(progressMap['Base 60 Stats']).toMatchObject({
+        measure: 'levels',
+        currentValue: 6_569_808, // 273_742 * 24 skills
+        absoluteProgress: 1,
+        relativeProgress: 1
+      });
+
+      expect(progressMap['Base 70 Stats']).toMatchObject({
+        measure: 'levels',
+        currentValue: 17_703_048, // 737_627 * 24 skills
+        absoluteProgress: 1,
+        relativeProgress: 1
+      });
+
       expect(progressMap['Base 80 Stats']).toMatchObject({
-        currentValue: 45_679_564, // 1_986_068 (lvl 80) * 23 skills
+        measure: 'levels',
+        currentValue: 47_665_632, // 1_986_068 * 24 skills
         absoluteProgress: 1, // 100% done with this achievement - (45_679_564 / 45_679_564) = 1
         relativeProgress: 1 // 100% done between Base 70 and Base 80 - ((45_679_564 - 16_965_421) / (45_679_564 - 16_965_421)) >= 1
       });
 
       expect(progressMap['Base 90 Stats']).toMatchObject({
-        // there's 2 skills under 90, agility and construction
-        currentValue: 121_252_498, // (5_346_332 * 21 skills) + 4_537_106 (construction) + 4_442_420 (agility)
-        absoluteProgress: 0.9861, // 100% done with this achievement - (121_252_498 / 122_965_636) = 0.9861
-        relativeProgress: 0.9778 // 19.3% done between Base 80 and Base 90 - ((121_252_498 - 45_679_564) / (122_965_636 - 45_679_564)) = 0.9778
+        measure: 'levels',
+        // there's 3 skills under 90, agility, construction and sailing
+        currentValue: 125_499_711, // (5_346_332 * 21 skills) + 4_537_106 (construction) + 4_442_420 (agility) + 4_247_213 (sailing)
+        absoluteProgress: 0.9781, // 97% done with this achievement - (125_499_711 / 128_311_968) = 0.9781
+        relativeProgress: 0.9651 // 96% done between Base 80 and Base 90 - ((125_499_711 - 1_986_068) / (128_311_968 - 1_986_068)) = 0.9778  });
       });
     });
 
@@ -211,7 +227,7 @@ describe('Achievements API', () => {
       expect(failedFetchResponse.body.message).toBe('Group not found.');
 
       let modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawDataB, [
-        { metric: Metric.GUARDIANS_OF_THE_RIFT, value: 50 }
+        { hiscoresMetricName: 'Rifts closed', value: 50 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -229,7 +245,7 @@ describe('Achievements API', () => {
       // Note: this should be reviewed in the future, as it would make sense to still
       // sync and back date achievements on the first ever player update
       modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawDataB, [
-        { metric: Metric.GUARDIANS_OF_THE_RIFT, value: 51 }
+        { hiscoresMetricName: 'Rifts closed', value: 51 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -285,16 +301,16 @@ describe('Achievements API', () => {
       const totalCount =
         firstFetchResponse.body.length + secondFetchResponse.body.length + thirdFetchResponse.body.length;
 
-      expect(totalCount).toBe(140); // 37 achievements from Psikoi, 103 from Lynx Titan
+      expect(totalCount).toBe(144); // 37 achievements from Psikoi, 107 from Lynx Titan
     });
 
     test('Track player again, test new achievements', async () => {
       // Change attack to 50.5m
       let modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawDataA, [
-        { metric: Metric.ATTACK, value: 50_585_985 },
-        { metric: Metric.GUARDIANS_OF_THE_RIFT, value: 51 },
-        { metric: Metric.SOUL_WARS_ZEAL, value: 5500 }, // This should trigger a new achievement
-        { metric: Metric.COLLECTIONS_LOGGED, value: 653 } // This should trigger a new achievement with unknown date (added to the hiscores way after release)
+        { hiscoresMetricName: 'Attack', value: 50_585_985 },
+        { hiscoresMetricName: 'Rifts closed', value: 51 },
+        { hiscoresMetricName: 'Soul Wars Zeal', value: 5500 }, // This should trigger a new achievement
+        { hiscoresMetricName: 'Collections Logged', value: 653 } // This should trigger a new achievement with unknown date (added to the hiscores way after release)
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -340,10 +356,10 @@ describe('Achievements API', () => {
 
       // Change attack to 50.5m
       modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawDataA, [
-        { metric: Metric.ATTACK, value: 50_585_985 },
-        { metric: Metric.GUARDIANS_OF_THE_RIFT, value: 51 },
-        { metric: Metric.SOUL_WARS_ZEAL, value: 5500 },
-        { metric: Metric.COLLECTIONS_LOGGED, value: 660 } // Gained 7 more collections
+        { hiscoresMetricName: 'Attack', value: 50_585_985 },
+        { hiscoresMetricName: 'Rifts closed', value: 51 },
+        { hiscoresMetricName: 'Soul Wars Zeal', value: 5500 },
+        { hiscoresMetricName: 'Collections Logged', value: 660 } // Gained 7 more collections
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -371,7 +387,7 @@ describe('Achievements API', () => {
 
     it('should not count very-close achievements as complete', async () => {
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawDataA, [
-        { metric: Metric.AGILITY, value: SKILL_EXP_AT_99 - 50 } // 50 exp away from 99
+        { hiscoresMetricName: 'Agility', value: SKILL_EXP_AT_99 - 50 } // 50 exp away from 99
       ]);
 
       registerHiscoresMock(axiosMock, {

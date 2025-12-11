@@ -1,7 +1,7 @@
 import { isErrored } from '@attio/fetchable';
 import prisma from '../../prisma';
 import { DiscordBotEventType, dispatchDiscordBotEvent } from '../../services/discord.service';
-import { GroupRole } from '../../utils';
+import { GroupRole } from '../../types';
 import { Job } from '../job.class';
 import { JobOptions } from '../types/job-options.type';
 
@@ -15,7 +15,6 @@ interface Payload {
 
 export class DispatchMembersJoinedDiscordEventJob extends Job<Payload> {
   static options: JobOptions = {
-    attempts: 3,
     backoff: {
       type: 'exponential',
       delay: 30_000

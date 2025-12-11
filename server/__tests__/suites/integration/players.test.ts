@@ -1,7 +1,7 @@
 import axios from 'axios';
 import MockAdapter from 'axios-mock-adapter';
 import supertest from 'supertest';
-import apiServer from '../../../src/api';
+import APIInstance from '../../../src/api';
 import { eventEmitter } from '../../../src/api/events';
 import * as GroupMembersJoinedEvent from '../../../src/api/events/handlers/group-members-joined.event';
 import * as GroupMembersLeftEvent from '../../../src/api/events/handlers/group-members-left.event';
@@ -14,16 +14,23 @@ import * as playerUtils from '../../../src/api/modules/players/player.utils';
 import { findOrCreatePlayers } from '../../../src/api/modules/players/services/FindOrCreatePlayersService';
 import { reviewFlaggedPlayer } from '../../../src/api/modules/players/services/ReviewFlaggedPlayerService';
 import { setUpdateCooldown } from '../../../src/api/modules/players/services/UpdatePlayerService';
-import { formatSnapshot, parseHiscoresSnapshot } from '../../../src/api/modules/snapshots/snapshot.utils';
+import { buildHiscoresSnapshot } from '../../../src/api/modules/snapshots/services/BuildHiscoresSnapshot';
+import { formatSnapshotResponse } from '../../../src/api/responses';
 import prisma from '../../../src/prisma';
+import { HiscoresDataSchema } from '../../../src/services/jagex.service';
 import { buildCompoundRedisKey, redisClient } from '../../../src/services/redis.service';
-import { BOSSES, Metric, PlayerAnnotationType, PlayerStatus, PlayerType } from '../../../src/utils';
-import { modifyRawHiscoresData, readFile, registerHiscoresMock, resetDatabase, sleep } from '../../utils';
+import { PlayerAnnotationType, PlayerStatus, PlayerType } from '../../../src/types';
+import {
+  emptyHiscoresData,
+  modifyRawHiscoresData,
+  readFile,
+  registerHiscoresMock,
+  resetDatabase,
+  sleep
+} from '../../utils';
 
-const api = supertest(apiServer.express);
+const api = supertest(new APIInstance().init().express);
 const axiosMock = new MockAdapter(axios, { onNoMatch: 'passthrough' });
-
-const HISCORES_FILE_PATH = `${__dirname}/../../data/hiscores/psikoi_hiscores.txt`;
 
 const groupMembersLeftEvent = jest.spyOn(GroupMembersLeftEvent, 'handler');
 const groupMembersJoinedEvent = jest.spyOn(GroupMembersJoinedEvent, 'handler');
@@ -34,7 +41,6 @@ const playerUpdatedEvent = jest.spyOn(PlayerUpdatedEvent, 'handler');
 const playerTypeChangedEvent = jest.spyOn(PlayerTypeChangedEvent, 'handler');
 
 const globalData = {
-  testPlayerId: -1,
   hiscoresRawData: ''
 };
 
@@ -50,7 +56,7 @@ beforeAll(async () => {
   await resetDatabase();
   await redisClient.flushall();
 
-  globalData.hiscoresRawData = await readFile(HISCORES_FILE_PATH);
+  globalData.hiscoresRawData = await readFile(`${__dirname}/../../data/hiscores/psikoi_hiscores.json`);
 
   // Mock regular hiscores data, and block any ironman requests
   registerHiscoresMock(axiosMock, {
@@ -372,7 +378,7 @@ describe('Player API', () => {
       });
 
       // Using the test "main" rates, we should get this number for regular accs
-      expect(response.body.ehp).toBeCloseTo(630.6918952334495, 4);
+      expect(response.body.ehp).toBeCloseTo(665.07587, 4);
 
       expect(playerUpdatedEvent).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -418,13 +424,11 @@ describe('Player API', () => {
       );
 
       expect(secondTypeReviewCooldown).toBeNull();
-
-      globalData.testPlayerId = response.body.id;
     });
 
     it('should track player (1 def)', async () => {
       const data1Def = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.DEFENCE, value: 0 } // 1 defence
+        { hiscoresMetricName: 'Defence', value: 0 } // 1 defence
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -448,7 +452,7 @@ describe('Player API', () => {
 
     it('should track player (zerker)', async () => {
       const dataZerker = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.DEFENCE, value: 61_512 } // 45 defence
+        { hiscoresMetricName: 'Defence', value: 61_512 } // 45 defence
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -472,7 +476,7 @@ describe('Player API', () => {
 
     it('should track player (10hp)', async () => {
       const data10HP = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.HITPOINTS, value: 1154 } // 10 Hitpoints
+        { hiscoresMetricName: 'Hitpoints', value: 1154 } // 10 Hitpoints
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -496,13 +500,13 @@ describe('Player API', () => {
 
     it('should track player (lvl3)', async () => {
       const dataLvl3 = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.ATTACK, value: 0 },
-        { metric: Metric.STRENGTH, value: 0 },
-        { metric: Metric.DEFENCE, value: 0 },
-        { metric: Metric.HITPOINTS, value: 1154 },
-        { metric: Metric.PRAYER, value: 0 },
-        { metric: Metric.RANGED, value: 0 },
-        { metric: Metric.MAGIC, value: 0 }
+        { hiscoresMetricName: 'Attack', value: 0 },
+        { hiscoresMetricName: 'Strength', value: 0 },
+        { hiscoresMetricName: 'Defence', value: 0 },
+        { hiscoresMetricName: 'Hitpoints', value: 1154 },
+        { hiscoresMetricName: 'Prayer', value: 0 },
+        { hiscoresMetricName: 'Ranged', value: 0 },
+        { hiscoresMetricName: 'Magic', value: 0 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -526,18 +530,13 @@ describe('Player API', () => {
     });
 
     it('should track player (f2p)', async () => {
-      const dataF2P = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.AGILITY, value: 0 },
-        { metric: Metric.CONSTRUCTION, value: 0 },
-        { metric: Metric.FARMING, value: 0 },
-        { metric: Metric.FLETCHING, value: 0 },
-        { metric: Metric.HERBLORE, value: 0 },
-        { metric: Metric.HUNTER, value: 0 },
-        { metric: Metric.THIEVING, value: 0 },
-        { metric: Metric.SLAYER, value: 0 },
-        ...BOSSES.map(b => ({ metric: b, value: 0 })),
-        { metric: Metric.BRYOPHYTA, value: 10 },
-        { metric: Metric.OBOR, value: 10 }
+      const dataF2P = modifyRawHiscoresData(emptyHiscoresData(globalData.hiscoresRawData), [
+        { hiscoresMetricName: 'Attack', value: 1000 },
+        { hiscoresMetricName: 'Magic', value: 1000 },
+        { hiscoresMetricName: 'Cooking', value: 1000 },
+        { hiscoresMetricName: 'Woodcutting', value: 2000 },
+        { hiscoresMetricName: 'Bryophyta', value: 10 },
+        { hiscoresMetricName: 'Obor', value: 10 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -561,25 +560,11 @@ describe('Player API', () => {
     });
 
     it('should track player (f2p & lvl3)', async () => {
-      const dataF2P = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.ATTACK, value: 0 },
-        { metric: Metric.STRENGTH, value: 0 },
-        { metric: Metric.DEFENCE, value: 0 },
-        { metric: Metric.HITPOINTS, value: 1154 },
-        { metric: Metric.PRAYER, value: 0 },
-        { metric: Metric.RANGED, value: 0 },
-        { metric: Metric.MAGIC, value: 0 },
-        { metric: Metric.AGILITY, value: 0 },
-        { metric: Metric.CONSTRUCTION, value: 0 },
-        { metric: Metric.FARMING, value: 0 },
-        { metric: Metric.FLETCHING, value: 0 },
-        { metric: Metric.HERBLORE, value: 0 },
-        { metric: Metric.HUNTER, value: 0 },
-        { metric: Metric.THIEVING, value: 0 },
-        { metric: Metric.SLAYER, value: 0 },
-        ...BOSSES.map(b => ({ metric: b, value: 0 })),
-        { metric: Metric.BRYOPHYTA, value: 10 },
-        { metric: Metric.OBOR, value: 10 }
+      const dataF2P = modifyRawHiscoresData(emptyHiscoresData(globalData.hiscoresRawData), [
+        { hiscoresMetricName: 'Cooking', value: 1000 },
+        { hiscoresMetricName: 'Woodcutting', value: 2000 },
+        { hiscoresMetricName: 'Bryophyta', value: 10 },
+        { hiscoresMetricName: 'Obor', value: 10 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -623,7 +608,7 @@ describe('Player API', () => {
       // IM rates should have been used, so the output EHP should be different than the one
       // calculate for the regular player (Psikoi)
       expect(response.body.ehp).not.toBeCloseTo(694.4541800000006, 4);
-      expect(response.body.ehp).toBeCloseTo(1226.188183430856, 4);
+      expect(response.body.ehp).toBeCloseTo(1260.57215, 4);
 
       expect(response.body.latestSnapshot).not.toBeNull();
 
@@ -666,7 +651,7 @@ describe('Player API', () => {
 
     it('should track and review type', async () => {
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.OVERALL, value: 350_192_115 } // overall exp increased by 50m
+        { hiscoresMetricName: 'Overall', value: 350_192_115 } // overall exp increased by 50m
       ]);
 
       // Mock the hiscores to mark the next tracked player as a regular ironman
@@ -715,7 +700,7 @@ describe('Player API', () => {
 
     it('should not track player (excessive gains)', async () => {
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.RUNECRAFTING, value: 100_000_000 } // player jumps to 100m RC exp
+        { hiscoresMetricName: 'Runecraft', value: 100_000_000 } // player jumps to 100m RC exp
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -753,7 +738,7 @@ describe('Player API', () => {
 
     it('should not track player (negative gains)', async () => {
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.RUNECRAFTING, value: 100_000 } // player's RC exp goes down to 100k
+        { hiscoresMetricName: 'Runecraft', value: 100_000 } // player's RC exp goes down to 100k
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -772,8 +757,8 @@ describe('Player API', () => {
 
     it('should track player (new gains)', async () => {
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.ZULRAH, value: 1646 + 7 }, // player gains 7 zulrah kc
-        { metric: Metric.SMITHING, value: 6_177_978 + 1337 } // player gains 1337 smithing exp
+        { hiscoresMetricName: 'Zulrah', value: 1646 + 7 }, // player gains 7 zulrah kc
+        { hiscoresMetricName: 'Smithing', value: 6_177_978 + 1337 } // player gains 1337 smithing exp
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -858,7 +843,7 @@ describe('Player API', () => {
       expect(firstResponse.status).toBe(201);
 
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.RUNECRAFTING, value: 100_000_000 } // player jumps to 100m RC exp
+        { hiscoresMetricName: 'Runecraft', value: 100_000_000 } // player jumps to 100m RC exp
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -1022,8 +1007,8 @@ describe('Player API', () => {
 
     it('should assert player type (regular)', async () => {
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.ZULRAH, value: 1646 + 7 }, // restore the zulrah kc,
-        { metric: Metric.SMITHING, value: 6_177_978 + 1337 } // restore the smithing exp
+        { hiscoresMetricName: 'Zulrah', value: 1646 + 7 }, // restore the zulrah kc,
+        { hiscoresMetricName: 'Smithing', value: 6_177_978 + 1337 } // restore the smithing exp
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -1252,21 +1237,21 @@ describe('Player API', () => {
         .post(`/players/rollmeback/rollback`)
         .send({ adminPassword: process.env.ADMIN_PASSWORD });
 
-      expect(firstResponse.status).toBe(500);
-      expect(firstResponse.body.message).toBe("Failed to delete a player's last snapshots.");
+      expect(firstResponse.status).toBe(400);
+      expect(firstResponse.body.message).toBe('No snapshots were deleted, rollback not performed.');
 
       const secondResponse = await api
         .post(`/players/rollmeback/rollback`)
         .send({ adminPassword: process.env.ADMIN_PASSWORD, untilLastChange: true });
 
-      expect(secondResponse.status).toBe(500);
-      expect(secondResponse.body.message).toBe("Failed to delete a player's last snapshots.");
+      expect(secondResponse.status).toBe(400);
+      expect(secondResponse.body.message).toBe('No snapshots were deleted, rollback not performed.');
     });
 
     it('should rollback player (last snapshot)', async () => {
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.ZULRAH, value: 1646 + 7 }, // restore the zulrah kc,
-        { metric: Metric.SMITHING, value: 6_177_978 + 1337 } // restore the smithing exp
+        { hiscoresMetricName: 'Zulrah', value: 1646 + 7 }, // restore the zulrah kc,
+        { hiscoresMetricName: 'Smithing', value: 6_177_978 + 1337 } // restore the smithing exp
       ]);
 
       // Mock regular hiscores data, and block any ironman requests
@@ -1317,14 +1302,22 @@ describe('Player API', () => {
       expect(playerSnapshotsAfter.length).toBe(4);
 
       // The last snapshot (sorted desc) should be different
-      expect(playerSnapshotsAfter.at(0)!.id).not.toBe(playerSnapshotsBefore.at(0)!.id);
+      expect(playerSnapshotsAfter.at(0)!.createdAt.getTime()).not.toBe(
+        playerSnapshotsBefore.at(0)!.createdAt.getTime()
+      );
 
       // The second to last snapshot (sorted desc) should be the same
-      expect(playerSnapshotsAfter.at(1)!.id).toBe(playerSnapshotsBefore.at(1)!.id);
+      expect(playerSnapshotsAfter.at(1)!.createdAt.getTime()).toBe(
+        playerSnapshotsBefore.at(1)!.createdAt.getTime()
+      );
 
       // The previous last snapshot shouldn't be on the new snapshots list anymore
-      const previousLastSnapshotId = playerSnapshotsBefore.at(0)!.id;
-      expect(playerSnapshotsAfter.find(s => s.id === previousLastSnapshotId)).not.toBeDefined();
+
+      expect(
+        playerSnapshotsAfter.find(
+          s => s.createdAt.getTime() === playerSnapshotsBefore.at(0)!.createdAt.getTime()
+        )
+      ).not.toBeDefined();
     });
 
     it('should rollback player (until last changed)', async () => {
@@ -1383,16 +1376,21 @@ describe('Player API', () => {
       expect(playerSnapshotsAfter.length).toBe(4 - recentSnapshotsCount + 1);
 
       // The last snapshot (sorted desc) should be different
-      expect(playerSnapshotsAfter.at(0)!.id).not.toBe(playerSnapshotsBefore.at(0)!.id);
+      expect(playerSnapshotsAfter.at(0)!.createdAt.getTime()).not.toBe(
+        playerSnapshotsBefore.at(0)!.createdAt.getTime()
+      );
 
       // The previous last snapshot shouldn't be on the new snapshots list anymore
-      const previousLastSnapshotId = playerSnapshotsBefore.at(0)!.id;
-      expect(playerSnapshotsAfter.find(s => s.id === previousLastSnapshotId)).not.toBeDefined();
+      expect(
+        playerSnapshotsAfter.find(
+          s => s.createdAt.getTime() === playerSnapshotsBefore.at(0)!.createdAt.getTime()
+        )
+      ).not.toBeDefined();
     });
 
     it("shouldn't rollback col log (player has no snapshots)", async () => {
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.COLLECTIONS_LOGGED, value: 100 }
+        { hiscoresMetricName: 'Collections Logged', value: 100 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -1419,7 +1417,7 @@ describe('Player API', () => {
 
     it('should rollback col log (last snapshot)', async () => {
       let modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.COLLECTIONS_LOGGED, value: 100 }
+        { hiscoresMetricName: 'Collections Logged', value: 100 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -1433,7 +1431,7 @@ describe('Player API', () => {
       expect(trackResponse.statusCode).toBe(200);
 
       modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.COLLECTIONS_LOGGED, value: 1000 }
+        { hiscoresMetricName: 'Collections Logged', value: 1000 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -1447,7 +1445,7 @@ describe('Player API', () => {
       expect(secondTrackResponse.statusCode).toBe(200);
 
       modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.COLLECTIONS_LOGGED, value: 200 }
+        { hiscoresMetricName: 'Collections Logged', value: 200 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -1573,12 +1571,15 @@ describe('Player API', () => {
 
       const player = playerResponse.body;
 
-      const previousSnapshot = await parseHiscoresSnapshot(player.id, globalData.hiscoresRawData);
+      const previousSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(globalData.hiscoresRawData))
+      );
 
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.RUNECRAFTING, value: 50_000_000 },
-        { metric: Metric.AGILITY, value: 10_000_000 },
-        { metric: Metric.THIEVING, value: 20_000_000 }
+        { hiscoresMetricName: 'Runecraft', value: 50_000_000 },
+        { hiscoresMetricName: 'Agility', value: 10_000_000 },
+        { hiscoresMetricName: 'Thieving', value: 20_000_000 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -1586,19 +1587,22 @@ describe('Player API', () => {
         [PlayerType.IRONMAN]: { statusCode: 404 }
       });
 
-      const rejectedSnapshot = await parseHiscoresSnapshot(player.id, modifiedRawData);
+      const rejectedSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(modifiedRawData))
+      );
 
       // Manually set overall ranks and exp for de-iron checks later on
       previousSnapshot.overallRank = 10_000;
       rejectedSnapshot.overallRank = 60_000;
       rejectedSnapshot.overallExperience = 363_192_115;
 
-      const formattedPrevious = formatSnapshot(
+      const formattedPrevious = formatSnapshotResponse(
         previousSnapshot,
         getPlayerEfficiencyMap(previousSnapshot, player)
       );
 
-      const formattedRejected = formatSnapshot(
+      const formattedRejected = formatSnapshotResponse(
         rejectedSnapshot,
         getPlayerEfficiencyMap(rejectedSnapshot, player)
       );
@@ -1625,7 +1629,7 @@ describe('Player API', () => {
         previousSnapshot.overallExperience;
 
       expect(rankIncrease).toBe(5); // Increased by 500% (10k -> 60k)
-      expect(expIncrease).toBeCloseTo(0.20986560556395695, 8); // Increased by 20.98% (300_192_115 -> 363_192_115)
+      expect(expIncrease).toBeCloseTo(0.1929868502403211, 8); // Increased by 20.98% (304_439_328 -> 363_192_115)
 
       const flagContext = reviewFlaggedPlayer(player, previousSnapshot, rejectedSnapshot);
 
@@ -1635,7 +1639,7 @@ describe('Player API', () => {
         excessiveGainsReversed: false,
         possibleRollback: false,
         data: {
-          stackableGainedRatio: 0.3766375918855809
+          stackableGainedRatio: 0.37663758607790426
         },
         previous: {
           data: {
@@ -1698,11 +1702,14 @@ describe('Player API', () => {
 
       const player = playerResponse.body;
 
-      const previousSnapshot = await parseHiscoresSnapshot(player.id, globalData.hiscoresRawData);
+      const previousSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(globalData.hiscoresRawData))
+      );
 
       const modifiedRejectedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.ZULRAH, value: 1615 }, // zulrah kc dropped from 1646 to 1615
-        { metric: Metric.CONSTRUCTION, value: 10_000_000 } // construction exp increased from 4_537_106 to 10m
+        { hiscoresMetricName: 'Zulrah', value: 1615 }, // zulrah kc dropped from 1646 to 1615
+        { hiscoresMetricName: 'Construction', value: 10_000_000 } // construction exp increased from 4_537_106 to 10m
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -1710,7 +1717,10 @@ describe('Player API', () => {
         [PlayerType.IRONMAN]: { statusCode: 404 }
       });
 
-      const rejectedSnapshot = await parseHiscoresSnapshot(player.id, modifiedRejectedRawData);
+      const rejectedSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(modifiedRejectedRawData))
+      );
 
       const flagContext = reviewFlaggedPlayer(player, previousSnapshot, rejectedSnapshot);
 
@@ -1786,16 +1796,19 @@ describe('Player API', () => {
 
       const player = playerResponse.body;
 
-      const previousSnapshot = await parseHiscoresSnapshot(player.id, globalData.hiscoresRawData);
+      const previousSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(globalData.hiscoresRawData))
+      );
 
       await sleep(100);
 
       const modifiedRejectedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.ZULRAH, value: 20_000 },
-        { metric: Metric.TOMBS_OF_AMASCUT, value: 20_000 },
-        { metric: Metric.RUNECRAFTING, value: 200_000_000 },
-        { metric: Metric.WOODCUTTING, value: 200_000_000 },
-        { metric: Metric.SKOTIZO, value: 20 } // Skotizo kc decreased from 21 to 20
+        { hiscoresMetricName: 'Zulrah', value: 20_000 },
+        { hiscoresMetricName: 'Tombs of Amascut', value: 20_000 },
+        { hiscoresMetricName: 'Runecraft', value: 200_000_000 },
+        { hiscoresMetricName: 'Woodcutting', value: 200_000_000 },
+        { hiscoresMetricName: 'Skotizo', value: 20 } // Skotizo kc decreased from 21 to 20
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -1803,7 +1816,10 @@ describe('Player API', () => {
         [PlayerType.IRONMAN]: { statusCode: 404 }
       });
 
-      const rejectedSnapshot = await parseHiscoresSnapshot(player.id, modifiedRejectedRawData);
+      const rejectedSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(modifiedRejectedRawData))
+      );
 
       const flagContext = reviewFlaggedPlayer(player, previousSnapshot, rejectedSnapshot);
       expect(flagContext).toBeNull();
@@ -1826,7 +1842,7 @@ describe('Player API', () => {
 
     it("should auto-archive, and not send discord flagged report (negative gains, excessive gains reversed, can't be a rollback)", async () => {
       const modifiedPreviousRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.MINING, value: 200_000_000 } // mining exp will go from 200m to 6.5m
+        { hiscoresMetricName: 'Mining', value: 200_000_000 } // mining exp will go from 200m to 6.5m
       ]);
 
       // Mock regular hiscores data, and block any ironman requests
@@ -1840,7 +1856,10 @@ describe('Player API', () => {
 
       const player = playerResponse.body;
 
-      const previousSnapshot = await parseHiscoresSnapshot(player.id, modifiedPreviousRawData);
+      const previousSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(modifiedPreviousRawData))
+      );
 
       await sleep(100);
 
@@ -1849,7 +1868,10 @@ describe('Player API', () => {
         [PlayerType.IRONMAN]: { statusCode: 404 }
       });
 
-      const rejectedSnapshot = await parseHiscoresSnapshot(player.id, globalData.hiscoresRawData);
+      const rejectedSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(globalData.hiscoresRawData))
+      );
 
       const flagContext = reviewFlaggedPlayer(player, previousSnapshot, rejectedSnapshot);
       expect(flagContext).toBeNull();
@@ -1884,7 +1906,10 @@ describe('Player API', () => {
       // pre changes setup
       const groupId = await setupPreTransitionData(1000, player.id);
 
-      const previousSnapshot = await parseHiscoresSnapshot(player.id, globalData.hiscoresRawData);
+      const previousSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(globalData.hiscoresRawData))
+      );
 
       await prisma.snapshot.create({ data: previousSnapshot });
 
@@ -1892,10 +1917,10 @@ describe('Player API', () => {
       await setupPostTransitionDate(1000, player.id, groupId);
 
       const modifiedRejectedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.RUNECRAFTING, value: 50_000_000 },
-        { metric: Metric.AGILITY, value: 10_000_000 },
-        { metric: Metric.THIEVING, value: 20_000_000 },
-        { metric: Metric.MINING, value: 1_000_000 }
+        { hiscoresMetricName: 'Runecraft', value: 50_000_000 },
+        { hiscoresMetricName: 'Agility', value: 10_000_000 },
+        { hiscoresMetricName: 'Thieving', value: 20_000_000 },
+        { hiscoresMetricName: 'Mining', value: 1_000_000 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -1903,7 +1928,10 @@ describe('Player API', () => {
         [PlayerType.IRONMAN]: { statusCode: 404 }
       });
 
-      const rejectedSnapshot = await parseHiscoresSnapshot(player.id, modifiedRejectedRawData);
+      const rejectedSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(modifiedRejectedRawData))
+      );
 
       const submitNameChangeResponse = await api.post(`/names`).send({
         oldName: 'Greg Hirsch',
@@ -2068,7 +2096,10 @@ describe('Player API', () => {
       // pre changes setup
       const groupId = await setupPreTransitionData(2000, player.id);
 
-      const previousSnapshot = await parseHiscoresSnapshot(player.id, globalData.hiscoresRawData);
+      const previousSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(globalData.hiscoresRawData))
+      );
 
       await prisma.snapshot.create({ data: previousSnapshot });
 
@@ -2076,10 +2107,10 @@ describe('Player API', () => {
       await setupPostTransitionDate(2000, player.id, groupId);
 
       const modifiedRejectedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
-        { metric: Metric.RUNECRAFTING, value: 50_000_000 },
-        { metric: Metric.AGILITY, value: 10_000_000 },
-        { metric: Metric.THIEVING, value: 20_000_000 },
-        { metric: Metric.MINING, value: 1_000_000 }
+        { hiscoresMetricName: 'Runecraft', value: 50_000_000 },
+        { hiscoresMetricName: 'Agility', value: 10_000_000 },
+        { hiscoresMetricName: 'Thieving', value: 20_000_000 },
+        { hiscoresMetricName: 'Mining', value: 1_000_000 }
       ]);
 
       registerHiscoresMock(axiosMock, {
@@ -2087,7 +2118,10 @@ describe('Player API', () => {
         [PlayerType.IRONMAN]: { statusCode: 404 }
       });
 
-      const rejectedSnapshot = await parseHiscoresSnapshot(player.id, modifiedRejectedRawData);
+      const rejectedSnapshot = buildHiscoresSnapshot(
+        player.id,
+        HiscoresDataSchema.parse(JSON.parse(modifiedRejectedRawData))
+      );
 
       const submitNameChangeResponse = await api.post(`/names`).send({
         oldName: 'TomWambsgans',
@@ -2397,11 +2431,19 @@ describe('Player API', () => {
       data: {
         id: idOffset + 4,
         title: `Test Competition 4`,
-        metric: 'zulrah',
         startsAt: new Date(),
         endsAt: new Date(Date.now() + 3_600_000),
         verificationHash: '',
-        participations: { create: { playerId } }
+        participations: {
+          create: {
+            playerId
+          }
+        },
+        metrics: {
+          create: {
+            metric: 'zulrah'
+          }
+        }
       }
     });
 
@@ -2409,12 +2451,20 @@ describe('Player API', () => {
       data: {
         id: idOffset + 5,
         title: `Test Competition 5`,
-        metric: 'zulrah',
         groupId,
         startsAt: new Date(),
         endsAt: new Date(Date.now() + 3_600_000),
         verificationHash: '',
-        participations: { create: { playerId } }
+        participations: {
+          create: {
+            playerId
+          }
+        },
+        metrics: {
+          create: {
+            metric: 'zulrah'
+          }
+        }
       }
     });
 
@@ -2422,11 +2472,19 @@ describe('Player API', () => {
       data: {
         id: idOffset + 6,
         title: `Test Competition 6`,
-        metric: 'zulrah',
         startsAt: new Date(),
         endsAt: new Date(Date.now() + 3_600_000),
         verificationHash: '',
-        participations: { create: { playerId } }
+        participations: {
+          create: {
+            playerId
+          }
+        },
+        metrics: {
+          create: {
+            metric: 'zulrah'
+          }
+        }
       }
     });
 
@@ -2435,7 +2493,11 @@ describe('Player API', () => {
         id: idOffset + 3,
         name: `Test Group 3 ${idOffset}`,
         verificationHash: '',
-        memberships: { create: { playerId } }
+        memberships: {
+          create: {
+            playerId
+          }
+        }
       }
     });
 
@@ -2443,12 +2505,20 @@ describe('Player API', () => {
       data: {
         id: idOffset + 7,
         title: `Test Competition 7`,
-        metric: 'zulrah',
         groupId,
         startsAt: new Date(),
         endsAt: new Date(Date.now() + 3_600_000),
         verificationHash: '',
-        participations: { create: { playerId } }
+        participations: {
+          create: {
+            playerId
+          }
+        },
+        metrics: {
+          create: {
+            metric: 'zulrah'
+          }
+        }
       }
     });
 
@@ -2456,11 +2526,19 @@ describe('Player API', () => {
       data: {
         id: idOffset + 8,
         title: `Test Competition 8`,
-        metric: 'zulrah',
         startsAt: new Date(),
         endsAt: new Date(Date.now() + 3_600_000),
         verificationHash: '',
-        participations: { create: { playerId } }
+        participations: {
+          create: {
+            playerId
+          }
+        },
+        metrics: {
+          create: {
+            metric: 'zulrah'
+          }
+        }
       }
     });
 
@@ -2468,12 +2546,20 @@ describe('Player API', () => {
       data: {
         id: idOffset + 9,
         title: `Test Competition 9`,
-        metric: 'zulrah',
         groupId,
         startsAt: new Date(),
         endsAt: new Date(Date.now() + 3_600_000),
         verificationHash: '',
-        participations: { create: { playerId } }
+        participations: {
+          create: {
+            playerId
+          }
+        },
+        metrics: {
+          create: {
+            metric: 'zulrah'
+          }
+        }
       }
     });
 
@@ -2482,7 +2568,11 @@ describe('Player API', () => {
         id: idOffset + 4,
         name: `Test Group 4 ${idOffset}`,
         verificationHash: '',
-        memberships: { create: { playerId } }
+        memberships: {
+          create: {
+            playerId
+          }
+        }
       }
     });
   }
@@ -2501,11 +2591,19 @@ describe('Player API', () => {
       data: {
         id: idOffset + 1,
         title: `Test Competition 1`,
-        metric: 'zulrah',
         startsAt: new Date('2020-01-01'),
         endsAt: new Date('2020-03-01'),
         verificationHash: '',
-        participations: { create: { playerId } }
+        participations: {
+          create: {
+            playerId
+          }
+        },
+        metrics: {
+          create: {
+            metric: 'zulrah'
+          }
+        }
       }
     });
 
@@ -2513,12 +2611,20 @@ describe('Player API', () => {
       data: {
         id: idOffset + 2,
         title: `Test Competition 2`,
-        metric: 'zulrah',
         startsAt: new Date('2020-01-01'),
         endsAt: new Date('2020-03-01'),
         verificationHash: '',
         groupId: group1.id,
-        participations: { create: { playerId } }
+        participations: {
+          create: {
+            playerId
+          }
+        },
+        metrics: {
+          create: {
+            metric: 'zulrah'
+          }
+        }
       }
     });
 
@@ -2526,12 +2632,20 @@ describe('Player API', () => {
       data: {
         id: idOffset + 3,
         title: `Test Competition 3`,
-        metric: 'zulrah',
         startsAt: new Date('2020-01-01'),
         endsAt: new Date('2030-03-01'),
         verificationHash: '',
         groupId: group1.id,
-        participations: { create: { playerId } }
+        participations: {
+          create: {
+            playerId
+          }
+        },
+        metrics: {
+          create: {
+            metric: 'zulrah'
+          }
+        }
       }
     });
 

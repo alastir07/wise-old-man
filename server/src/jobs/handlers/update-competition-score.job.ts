@@ -1,6 +1,7 @@
 import { fetchCompetitionDetails } from '../../api/modules/competitions/services/FetchCompetitionDetailsService';
-import prisma, { Competition } from '../../prisma';
-import { isActivity, isBoss, isSkill, Metric } from '../../utils';
+import prisma from '../../prisma';
+import { Competition, Metric } from '../../types';
+import { isActivity, isBoss, isSkill } from '../../utils/shared';
 import { Job } from '../job.class';
 
 interface Payload {
@@ -8,6 +9,10 @@ interface Payload {
 }
 
 export class UpdateCompetitionScoreJob extends Job<Payload> {
+  static getUniqueJobId(payload: Payload) {
+    return payload.competitionId.toString();
+  }
+
   async execute(payload: Payload) {
     if (process.env.NODE_ENV === 'test') {
       return;
@@ -42,9 +47,9 @@ async function calculateScore(competition: Competition): Promise<number> {
     return score;
   }
 
-  const details = await fetchCompetitionDetails(competition.id);
+  const { group, metrics, participations } = await fetchCompetitionDetails(competition.id);
 
-  const activeParticipants = details.participations.filter(p => p.progress.gained > 0);
+  const activeParticipants = participations.filter(p => p.progress.gained > 0);
 
   const averageGained =
     activeParticipants.map(a => a.progress.gained).reduce((acc, curr) => acc + curr, 0) /
@@ -62,11 +67,11 @@ async function calculateScore(competition: Competition): Promise<number> {
   }
 
   // If is group competition
-  if (details.group) {
+  if (group) {
     // The highest of 40, or 40% of the group's score
-    score += Math.max(40, details.group.score * 0.4);
+    score += Math.max(40, group.score * 0.4);
 
-    if (details.group.verified) {
+    if (group.verified) {
       score += 50;
     }
   }
@@ -81,7 +86,7 @@ async function calculateScore(competition: Competition): Promise<number> {
     }
   }
 
-  if (isSkill(competition.metric)) {
+  if (isSkill(metrics[0].metric)) {
     // If the average active participant has gained > 10k exp
     if (averageGained > 10_000) {
       score += 30;
@@ -93,7 +98,7 @@ async function calculateScore(competition: Competition): Promise<number> {
     }
   }
 
-  if (isBoss(competition.metric)) {
+  if (isBoss(metrics[0].metric)) {
     // If the average active participant has gained > 5 kc
     if (averageGained > 5) {
       score += 30;
@@ -105,7 +110,7 @@ async function calculateScore(competition: Competition): Promise<number> {
     }
   }
 
-  if (isActivity(competition.metric)) {
+  if (isActivity(metrics[0].metric)) {
     // If the average active participant has gained > 5 score
     if (averageGained > 5) {
       score += 30;
@@ -118,8 +123,8 @@ async function calculateScore(competition: Competition): Promise<number> {
   }
 
   // Discourage "overall" competitions, they are often tests
-  if (competition.metric !== Metric.OVERALL) {
-    score += 30;
+  if (metrics.length === 1 && metrics[0].metric === Metric.OVERALL) {
+    score -= 30;
   }
 
   // Discourage "over 2 weeks long" competitions
@@ -127,5 +132,10 @@ async function calculateScore(competition: Competition): Promise<number> {
     score += 50;
   }
 
-  return score;
+  // Encourage competitions with multiple metrics (instead of multiple single-metric competitions)
+  if (metrics.length > 1) {
+    score += 30;
+  }
+
+  return Math.max(0, score);
 }

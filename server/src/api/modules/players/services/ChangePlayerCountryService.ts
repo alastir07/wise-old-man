@@ -1,5 +1,6 @@
-import prisma, { Player } from '../../../../prisma';
-import { Country, findCountry } from '../../../../utils';
+import prisma from '../../../../prisma';
+import { Country, Player } from '../../../../types';
+import { findCountry } from '../../../../utils/shared';
 import { BadRequestError, NotFoundError, ServerError } from '../../../errors';
 import { standardize } from '../player.utils';
 
@@ -25,7 +26,7 @@ async function changePlayerCountry(username: string, country: string | null): Pr
     });
 
     return updatedPlayer;
-  } catch (error) {
+  } catch (_error) {
     // Failed to find player with that username or id
     throw new NotFoundError('Player not found.');
   }

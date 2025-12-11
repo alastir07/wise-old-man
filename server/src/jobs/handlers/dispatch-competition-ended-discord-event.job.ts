@@ -1,9 +1,10 @@
 import { isErrored } from '@attio/fetchable';
+import { fetchCompetitionDetails } from '../../api/modules/competitions/services/FetchCompetitionDetailsService';
+import { formatCompetitionResponse } from '../../api/responses';
 import prisma from '../../prisma';
 import { DiscordBotEventType, dispatchDiscordBotEvent } from '../../services/discord.service';
 import { Job } from '../job.class';
 import { JobOptions } from '../types/job-options.type';
-import { fetchCompetitionDetails } from '../../api/modules/competitions/services/FetchCompetitionDetailsService';
 
 interface Payload {
   competitionId: number;
@@ -11,7 +12,6 @@ interface Payload {
 
 export class DispatchCompetitionEndedDiscordEventJob extends Job<Payload> {
   static options: JobOptions = {
-    attempts: 3,
     backoff: {
       type: 'exponential',
       delay: 30_000
@@ -38,11 +38,24 @@ export class DispatchCompetitionEndedDiscordEventJob extends Job<Payload> {
     // Map the competition's end standings
     const standings = competitionDetails.participations
       .filter(p => p.progress.gained > 0)
-      .map(p => ({ displayName: p.player.displayName, teamName: p.teamName, gained: p.progress.gained }));
+      .map(p => ({
+        displayName: p.player.displayName,
+        teamName: p.participation.teamName,
+        gained: p.progress.gained
+      }));
+
+    const competitionResponse = formatCompetitionResponse(
+      {
+        ...competitionDetails.competition,
+        metrics: competitionDetails.metrics,
+        participantCount: competitionDetails.participations.length
+      },
+      competitionDetails.group
+    );
 
     const dispatchResult = await dispatchDiscordBotEvent(DiscordBotEventType.COMPETITION_ENDED, {
       groupId: competition.groupId,
-      competition,
+      competition: competitionResponse,
       standings
     });
 

@@ -2,8 +2,8 @@ import { AsyncResult, complete, errored, fromPromise, isErrored } from '@attio/f
 import { createId as cuid2 } from '@paralleldrive/cuid2';
 import axios from 'axios';
 import { WebhookClient } from 'discord.js';
-import { Competition } from '../prisma';
-import { Achievement, FlaggedPlayerReviewContext, Group, GroupRole, Player } from '../utils';
+import { CompetitionResponse, FlaggedPlayerReviewContextResponse } from '../api/responses';
+import { Achievement, Competition, Group, GroupRole, Player } from '../types';
 import logger from './logging.service';
 
 export enum DiscordBotEventType {
@@ -29,11 +29,11 @@ export enum DiscordBotEventType {
 type DiscordBotEventPayloadMap = {
   [DiscordBotEventType.COMPETITION_CREATED]: {
     groupId: number;
-    competition: Competition;
+    competition: CompetitionResponse;
   };
   [DiscordBotEventType.COMPETITION_ENDED]: {
     groupId: number;
-    competition: Competition;
+    competition: CompetitionResponse;
     standings: Array<{
       gained: number;
       displayName: string;
@@ -42,16 +42,16 @@ type DiscordBotEventPayloadMap = {
   };
   [DiscordBotEventType.COMPETITION_STARTED]: {
     groupId: number;
-    competition: Competition;
+    competition: CompetitionResponse;
   };
   [DiscordBotEventType.COMPETITION_STARTING]: {
     groupId: number;
-    competition: Competition;
+    competition: CompetitionResponse;
     minutesLeft: number;
   };
   [DiscordBotEventType.COMPETITION_ENDING]: {
     groupId: number;
-    competition: Competition;
+    competition: CompetitionResponse;
     minutesLeft: number;
   };
   [DiscordBotEventType.GROUP_MEMBERS_CHANGED_ROLES]: {
@@ -96,7 +96,7 @@ type DiscordBotEventPayloadMap = {
   }>;
   [DiscordBotEventType.PLAYER_FLAGGED_REVIEW]: {
     player: Player;
-    flagContext: FlaggedPlayerReviewContext;
+    flagContext: FlaggedPlayerReviewContextResponse;
   };
   [DiscordBotEventType.POTENTIAL_CREATION_SPAM]: {
     ipHash: string;

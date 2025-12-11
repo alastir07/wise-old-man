@@ -1,16 +1,12 @@
 import { isErrored } from '@attio/fetchable';
 import prisma from '../../../../prisma';
 import * as cryptService from '../../../../services/crypt.service';
-import { GroupRole, PlayerAnnotationType, PRIVELEGED_GROUP_ROLES } from '../../../../utils';
-import { omit } from '../../../../utils/omit.util';
+import { Group, GroupRole, PlayerAnnotationType } from '../../../../types';
+import { sanitizeWhitespace } from '../../../../utils/sanitize-whitespace.util';
 import { BadRequestError, ForbiddenError } from '../../../errors';
 import { eventEmitter, EventType } from '../../../events';
 import { isValidUsername, sanitize, standardize } from '../../players/player.utils';
 import { findOrCreatePlayers } from '../../players/services/FindOrCreatePlayersService';
-import { GroupDetails } from '../group.types';
-import { buildDefaultSocialLinks, sanitizeName } from '../group.utils';
-
-type CreateGroupResult = { group: GroupDetails; verificationCode: string };
 
 interface CreateGroupPayload {
   name: string;
@@ -23,9 +19,12 @@ interface CreateGroupPayload {
 async function createGroup(
   payload: CreateGroupPayload,
   creatorIpHash: string | null
-): Promise<CreateGroupResult> {
-  const name = sanitizeName(payload.name);
-  const description = payload.description ? sanitizeName(payload.description) : null;
+): Promise<{
+  group: Group;
+  verificationCode: string;
+}> {
+  const name = sanitizeWhitespace(payload.name);
+  const description = payload.description ? sanitizeWhitespace(payload.description) : null;
   const clanChat = payload.clanChat ? sanitize(payload.clanChat) : null;
 
   if (clanChat && !isValidUsername(clanChat)) {
@@ -124,20 +123,8 @@ async function createGroup(
     });
   }
 
-  const priorities = [...PRIVELEGED_GROUP_ROLES].reverse();
-
-  const sortedMemberships = createdGroup.memberships.sort(
-    (a, b) => priorities.indexOf(b.role) - priorities.indexOf(a.role) || a.role.localeCompare(b.role)
-  );
-
   return {
-    group: {
-      ...omit(createdGroup, 'verificationHash'),
-      socialLinks: buildDefaultSocialLinks(),
-      memberCount: sortedMemberships.length,
-      memberships: sortedMemberships,
-      roleOrders: []
-    },
+    group: createdGroup,
     verificationCode: code
   };
 }

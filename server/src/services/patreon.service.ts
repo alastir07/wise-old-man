@@ -2,12 +2,11 @@ import { AsyncResult, complete, errored, fromPromise, isErrored } from '@attio/f
 import axios from 'axios';
 import dayjs from 'dayjs';
 import { z } from 'zod';
-import { Patron } from '../prisma';
+import { Patron } from '../types';
 
 export const STATIC_PATRON_GROUP_IDS = [
   139, // Exclusive Elite Club
   201, // Ruthless (Aluminoti)
-  254, // Legacy (Rorro)
   1169 // Hardly Iron (Geeving)
 ];
 

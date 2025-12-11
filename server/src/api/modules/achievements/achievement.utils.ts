@@ -1,60 +1,47 @@
-import {
-  Metric,
-  getMetricMeasure,
-  getMetricValueKey,
-  getLevel,
-  SKILL_EXP_AT_99,
-  isMetric,
-  REAL_SKILLS,
-  formatNumber
-} from '../../../utils';
-import { Achievement, Snapshot } from '../../../prisma';
+import { AchievementDefinition, Snapshot } from '../../../types';
+import { getMetricValueKey } from '../../../utils/get-metric-value-key.util';
+import { getExpForLevel, getLevel, isMetric, MetricProps } from '../../../utils/shared';
+import { formatNumber } from '../../../utils/shared/format-number.util';
 import { ACHIEVEMENT_TEMPLATES } from './achievement.templates';
-import { ExtendedAchievement, AchievementDefinition } from './achievement.types';
 
-function extend(achievement: Achievement): ExtendedAchievement {
-  const measure = getAchievementMeasure(achievement.metric, achievement.threshold);
-  return { ...achievement, measure };
-}
-
-function getAchievementMeasure(metric: Metric, threshold: number): string {
-  if (metric === Metric.OVERALL && threshold <= SKILL_EXP_AT_99) return 'levels';
-  return getMetricMeasure(metric);
-}
-
-function getAchievemenName(name: string, threshold: number): string {
-  const adjustedThreshold = name === 'Base {level} Stats' ? threshold / REAL_SKILLS.length : threshold;
-  const newName = name
-    .replace('{threshold}', formatThreshold(adjustedThreshold))
-    .replace('{level}', formatThreshold(adjustedThreshold));
-
-  if (newName === 'Base 99 Stats') {
-    return 'Maxed Overall';
-  }
-
-  return newName;
-}
-
-function formatThreshold(threshold: number): string {
+function formatAchievementThreshold(templateName: string, threshold: number): string {
   if (threshold < 1000) return String(threshold);
   if (threshold <= 10_000) return `${threshold / 1000}k`;
 
-  if ([273_742, 737_627, 1_986_068, 5_346_332, 13_034_431].includes(threshold)) {
-    return getLevel(threshold).toString();
+  if (threshold === getExpForLevel(99)) {
+    return '99';
+  }
+
+  if (templateName.startsWith('Base {level} Stats')) {
+    return getLevel(threshold / 23).toString();
   }
 
   return formatNumber(threshold, true).toString();
 }
 
-function getAchievementDefinitions(): AchievementDefinition[] {
+function getHydratedAchievementName(templateName: string, threshold: number): string {
+  const newName = templateName
+    .replace('{threshold}', formatAchievementThreshold(templateName, threshold))
+    .replace('{level}', formatAchievementThreshold(templateName, threshold));
+
+  if (newName.startsWith('Base 99 Stats')) {
+    return newName.replace('Base 99 Stats', 'Maxed Overall');
+  }
+
+  return newName;
+}
+
+export function getAchievementDefinitions(): AchievementDefinition[] {
   const definitions: AchievementDefinition[] = [];
 
   ACHIEVEMENT_TEMPLATES.forEach(({ thresholds, name, metric, measure, getCurrentValue }) => {
+    const metricValueKey = getMetricValueKey(metric);
+
     thresholds.forEach(threshold => {
-      const newName = getAchievemenName(name, threshold);
+      const newName = getHydratedAchievementName(name, threshold);
 
       const getCurrentValueFn = (snapshot: Snapshot) => {
-        return getCurrentValue ? getCurrentValue(snapshot, threshold) : snapshot[getMetricValueKey(metric)];
+        return getCurrentValue ? getCurrentValue(snapshot, threshold) : snapshot[metricValueKey];
       };
 
       const validateFn = (snapshot: Snapshot) => {
@@ -64,7 +51,7 @@ function getAchievementDefinitions(): AchievementDefinition[] {
       definitions.push({
         name: newName,
         metric,
-        measure: measure || getMetricMeasure(metric),
+        measure: measure ?? MetricProps[metric].measure,
         threshold,
         validate: validateFn,
         getCurrentValue: getCurrentValueFn
@@ -75,7 +62,7 @@ function getAchievementDefinitions(): AchievementDefinition[] {
   return definitions;
 }
 
-function calculatePastDates(pastSnapshots: Snapshot[], definitions: AchievementDefinition[]) {
+export function calculatePastDates(pastSnapshots: Snapshot[], definitions: AchievementDefinition[]) {
   if (!definitions || definitions.length === 0) return {};
 
   // The player must have atleast 2 snapshots to find a achievement date
@@ -108,5 +95,3 @@ function calculatePastDates(pastSnapshots: Snapshot[], definitions: AchievementD
 
   return dateMap;
 }
-
-export { extend, calculatePastDates, getAchievementDefinitions };

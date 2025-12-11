@@ -1,12 +1,12 @@
 import { Suspense } from "react";
 import {
-  MeasuredDeltaProgress,
   Metric,
   MetricMeasure,
   MetricProps,
   Period,
   PeriodProps,
-  PlayerDeltasMap,
+  PlayerDeltasMapResponse,
+  MetricDelta,
   isActivity,
   isBoss,
   isSkill,
@@ -304,7 +304,7 @@ function YearlyHeatmapPanel(props: YearlyHeatmapPanelProps) {
 interface GainedHeaderProps {
   metric: Metric;
   view: "values" | "ranks";
-  gains: PlayerDeltasMap;
+  gains: PlayerDeltasMapResponse;
 }
 
 function GainedHeader(props: GainedHeaderProps) {
@@ -315,7 +315,7 @@ function GainedHeader(props: GainedHeaderProps) {
   let measure = MetricProps[metric].measure as string;
   if (measure === MetricMeasure.EXPERIENCE) measure = "exp.";
 
-  let values: MeasuredDeltaProgress;
+  let values: MetricDelta;
 
   if (isBoss(metric)) {
     values = isShowingRanks ? gains.bosses[metric].rank : gains.bosses[metric].kills;
@@ -383,15 +383,16 @@ function GainedHeader(props: GainedHeaderProps) {
   );
 }
 
-function getPercentGained(metric: Metric, progress: MeasuredDeltaProgress, includeMinimums = true) {
+function getPercentGained(metric: Metric, progress: MetricDelta, includeMinimums = true) {
   if (progress.gained === 0) return 0;
 
   let minimum = 0;
 
-  if (includeMinimums && (isBoss(metric) || isActivity(metric)))
+  if (includeMinimums && (isBoss(metric) || isActivity(metric))) {
     minimum = MetricProps[metric].minimumValue - 1;
+  }
 
-  const start = Math.max(minimum, progress.start);
+  const start = progress.start === -1 ? Math.max(minimum, progress.start) : progress.start;
 
   if (start === 0) return 1;
 

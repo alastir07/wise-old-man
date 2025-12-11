@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
 import { formatNumber } from "@wise-old-man/utils";
+import React, { useEffect, useRef, useState } from "react";
 import {
   BarChart as RechartsBarChart,
   Bar,
@@ -151,7 +151,7 @@ export default function BarChart(props: BarChartProps) {
               );
             }}
           />
-          <Bar dataKey="value" isAnimationActive={false}>
+          <Bar dataKey="value" isAnimationActive={false} maxBarSize={100}>
             {data.map((entry, index) => (
               <Cell
                 key={`cell-${index}`}

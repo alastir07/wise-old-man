@@ -1,19 +1,24 @@
-import prisma, {
+import prisma, { PrismaTypes } from '../../../../prisma';
+import logger from '../../../../services/logging.service';
+import {
+  MemberActivity,
+  MemberActivityType,
+  Membership,
   NameChange,
   NameChangeStatus,
   Participation,
+  Period,
   Player,
   PlayerAnnotation,
-  PrismaTypes,
+  PlayerStatus,
   Record
-} from '../../../../prisma';
-import logger from '../../../../services/logging.service';
-import { ActivityType, MemberActivity, Membership, PlayerStatus } from '../../../../utils';
+} from '../../../../types';
+import { prepareDecimalValue } from '../../../../utils/prepare-decimal-value.util';
+import { PeriodProps } from '../../../../utils/shared';
 import { BadRequestError, NotFoundError, ServerError } from '../../../errors';
 import { eventEmitter, EventType } from '../../../events';
 import * as playerUtils from '../../players/player.utils';
 import { archivePlayer } from '../../players/services/ArchivePlayerService';
-import { prepareRecordValue } from '../../records/record.utils';
 
 async function approveNameChange(id: number): Promise<NameChange> {
   const nameChange = await prisma.nameChange.findFirst({
@@ -104,6 +109,9 @@ async function approveNameChange(id: number): Promise<NameChange> {
       const snapshots = await prisma.snapshot.findMany({
         where: {
           playerId: archivedNewPlayer.id
+        },
+        select: {
+          playerId: true
         }
       });
 
@@ -160,8 +168,8 @@ async function transferPlayerData(
     memberActivity = await prisma.memberActivity.findMany({
       where: {
         OR: [
-          { playerId: oldPlayer.id, type: ActivityType.LEFT },
-          { playerId: newPlayer.id, type: ActivityType.JOINED }
+          { playerId: oldPlayer.id, type: MemberActivityType.LEFT },
+          { playerId: newPlayer.id, type: MemberActivityType.JOINED }
         ]
       }
     });
@@ -179,23 +187,63 @@ async function transferPlayerData(
     });
   }
 
+  if (newPlayerExists) {
+    const snapshotsToTransfer = await prisma.snapshot.findMany({
+      where: {
+        playerId: newPlayer.id,
+        createdAt: { gte: transitionDate }
+      }
+    });
+
+    if (snapshotsToTransfer.length > 0) {
+      logger.info(`snapshotsToTransfer | count:${snapshotsToTransfer.length}`);
+
+      const normalizeDate = (date: Date) => {
+        const copy = new Date(date.getTime());
+        copy.setHours(0, 0, 0, 0);
+        return copy;
+      };
+
+      const distinctDays = new Set(snapshotsToTransfer.map(s => normalizeDate(s.createdAt).getTime()));
+      logger.info(`snapshotsToTransfer | distinctDays:${distinctDays.size}`);
+
+      const oldestSnapshotDate = snapshotsToTransfer.sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+      )[0].createdAt;
+
+      const overYearOld =
+        oldestSnapshotDate.getTime() < new Date().getTime() - PeriodProps[Period.YEAR].milliseconds;
+
+      logger.info(`snapshotsToTransfer | oldest:${oldestSnapshotDate.toISOString()} | year:${overYearOld}`);
+    }
+  }
+
   const result = await prisma
     .$transaction(async transaction => {
       // had to, ffs
       const tx = transaction as unknown as PrismaTypes.TransactionClient;
 
       if (newPlayerExists) {
-        // Transfer all snapshots from the newPlayer (post transition date) to the old player
-        await transferSnapshots(tx, oldPlayer.id, newPlayer.id, transitionDate);
+        await transaction.player.update({
+          where: {
+            id: newPlayer.id
+          },
+          data: {
+            latestSnapshotDate: null
+          }
+        });
 
         // Deduplicate joined/left member activity created before the name change
         await deduplicateGroupActivity(tx, memberActivity);
 
+        // Transfer all participations from the newPlayer (post transition date) to the old player
+        await transferParticipations(tx, oldPlayer.id, newPlayer.id, transitionDate, oldParticipations);
+
         // Transfer all memberships from the newPlayer (post transition date) to the old player
         await transferMemberships(tx, oldPlayer.id, newPlayer.id, transitionDate, oldMemberships);
 
-        // Transfer all participations from the newPlayer (post transition date) to the old player
-        await transferParticipations(tx, oldPlayer.id, newPlayer.id, transitionDate, oldParticipations);
+        // Transfer all snapshots from the newPlayer (post transition date) to the old player
+        await transferSnapshots(tx, oldPlayer.id, newPlayer.id, transitionDate);
 
         // Transfer all approved name changes from the newPlayer (post transition date) to the old player
         await transferNameChanges(tx, oldPlayer.id, newPlayer.id, transitionDate);
@@ -245,11 +293,11 @@ async function deduplicateGroupActivity(
   if (memberActivity.length === 0) return;
 
   const leftActivity = memberActivity.filter(activity => {
-    return activity.type === ActivityType.LEFT;
+    return activity.type === MemberActivityType.LEFT;
   });
 
   const joinedActivity = memberActivity.filter(activity => {
-    return activity.type === ActivityType.JOINED;
+    return activity.type === MemberActivityType.JOINED;
   });
 
   const activityToDelete: MemberActivity[] = [];
@@ -309,7 +357,7 @@ async function transferRecords(
       },
       data: {
         playerId: oldPlayerId,
-        value: prepareRecordValue(record.metric, record.value)
+        value: prepareDecimalValue(record.metric, record.value)
       }
     });
   }
@@ -324,7 +372,7 @@ async function transferRecords(
         }
       },
       data: {
-        value: prepareRecordValue(oldRecord.metric, newRecord.value)
+        value: prepareDecimalValue(oldRecord.metric, newRecord.value)
       }
     });
 
@@ -433,7 +481,9 @@ function transferParticipations(
     data: {
       playerId: oldPlayerId,
       startSnapshotId: null,
-      endSnapshotId: null
+      endSnapshotId: null,
+      startSnapshotDate: null,
+      endSnapshotDate: null
     }
   });
 }

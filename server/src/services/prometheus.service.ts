@@ -1,7 +1,8 @@
-import { AsyncResult, complete, errored, fromPromise, isErrored } from '@attio/fetchable';
+import { AsyncResult, combineAsync, complete, errored, fromPromise, isErrored } from '@attio/fetchable';
 import axios from 'axios';
 import prometheus, { Counter, Gauge, Histogram, Registry } from 'prom-client';
 import { getThreadIndex } from '../env';
+import { getPrismaPrometheusMetrics } from '../prisma';
 
 class PrometheusService {
   private registry: Registry;
@@ -9,8 +10,8 @@ class PrometheusService {
   private jobQueueGauge: Gauge<'queueName' | 'state'>;
   private httpHistogram: Histogram<'method' | 'route' | 'status' | 'userAgent'>;
   private eventCounter: Counter<'eventType'>;
-  private hiscoresHistogram: Histogram<'status'>;
-  private runeMetricsHistogram: Histogram<'status'>;
+  private jagexServiceHistogram: Histogram<'service' | 'status'>;
+  private genericCounter: Counter<'metric'>;
 
   private pushInterval: NodeJS.Timeout | null = null;
 
@@ -18,7 +19,7 @@ class PrometheusService {
     this.registry = new prometheus.Registry();
 
     this.registry.setDefaultLabels({
-      app: 'wise-old-man',
+      app: process.env.SERVER_TYPE ?? 'dev',
       threadIndex: getThreadIndex()
     });
 
@@ -50,26 +51,25 @@ class PrometheusService {
       labelNames: ['eventType']
     });
 
-    this.runeMetricsHistogram = new prometheus.Histogram({
-      name: 'runemetrics_duration_seconds',
-      help: 'Duration of RuneMetrics requests in microseconds',
-      labelNames: ['status'],
+    this.jagexServiceHistogram = new prometheus.Histogram({
+      name: 'jagex_service_duration_seconds',
+      help: 'Duration of Jagex service requests in microseconds',
+      labelNames: ['service', 'status'],
       buckets: [0.1, 0.3, 0.5, 1, 5, 10, 30]
     });
 
-    this.hiscoresHistogram = new prometheus.Histogram({
-      name: 'hiscores_duration_seconds',
-      help: 'Duration of hiscores requests in microseconds',
-      labelNames: ['status'],
-      buckets: [0.1, 0.3, 0.5, 1, 5, 10, 30]
+    this.genericCounter = new prometheus.Counter({
+      name: 'generic_counter',
+      help: 'A generic counter for various metrics',
+      labelNames: ['metric']
     });
 
     this.registry.registerMetric(this.jobHistogram);
     this.registry.registerMetric(this.jobQueueGauge);
     this.registry.registerMetric(this.httpHistogram);
     this.registry.registerMetric(this.eventCounter);
-    this.registry.registerMetric(this.runeMetricsHistogram);
-    this.registry.registerMetric(this.hiscoresHistogram);
+    this.registry.registerMetric(this.jagexServiceHistogram);
+    this.registry.registerMetric(this.genericCounter);
   }
 
   init() {
@@ -99,7 +99,10 @@ class PrometheusService {
       return errored({ code: 'MISSING_METRICS_URL' });
     }
 
-    const metricsResult = await fromPromise(this.registry.getMetricsAsJSON());
+    const metricsResult = await combineAsync([
+      fromPromise(this.registry.metrics()),
+      fromPromise(getPrismaPrometheusMetrics())
+    ]);
 
     if (isErrored(metricsResult)) {
       return errored({
@@ -108,11 +111,13 @@ class PrometheusService {
       });
     }
 
+    const mergedMetrics = metricsResult.value.join('\n');
+
     const requestResult = await fromPromise(
       axios.post(process.env.PROMETHEUS_METRICS_SERVICE_URL, {
-        source: 'api',
-        data: metricsResult.value,
-        threadIndex: getThreadIndex()
+        source: process.env.SERVER_TYPE ?? 'dev',
+        data: mergedMetrics,
+        thread_index: getThreadIndex()
       })
     );
 
@@ -130,12 +135,8 @@ class PrometheusService {
     return this.httpHistogram.startTimer();
   }
 
-  trackRuneMetricsRequest() {
-    return this.runeMetricsHistogram.startTimer();
-  }
-
-  trackHiscoresRequest() {
-    return this.hiscoresHistogram.startTimer();
+  trackJagexServiceRequest() {
+    return this.jagexServiceHistogram.startTimer();
   }
 
   trackJob() {
@@ -144,6 +145,10 @@ class PrometheusService {
 
   trackEventEmitted(eventType: string) {
     this.eventCounter.inc({ eventType });
+  }
+
+  trackGenericMetric(metric: string, incrementBy = 1) {
+    this.genericCounter.inc({ metric }, incrementBy);
   }
 
   updateQueueMetrics(queueName: string, counts: Record<string, number>) {

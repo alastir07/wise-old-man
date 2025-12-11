@@ -1,7 +1,22 @@
-import { Snapshot } from '../../../prisma';
-import { Metric, REAL_SKILLS } from '../../../utils';
+import { Metric, Snapshot } from '../../../types';
+import { getExpForLevel, REAL_SKILLS } from '../../../utils/shared';
 import { getCappedExp } from '../snapshots/snapshot.utils';
-import { AchievementTemplate } from './achievement.types';
+
+interface AchievementTemplate {
+  name: string;
+  metric: Metric;
+  measure?: string;
+  thresholds: number[];
+  getCurrentValue?: (snapshot: Snapshot, threshold: number) => number;
+}
+
+export const LEGACY_TEMPLATE_NAMES = [
+  'Base 60 Stats (Pre-Sailing)',
+  'Base 70 Stats (Pre-Sailing)',
+  'Base 80 Stats (Pre-Sailing)',
+  'Base 90 Stats (Pre-Sailing)',
+  'Maxed Overall (Pre-Sailing)'
+];
 
 export const ACHIEVEMENT_TEMPLATES: AchievementTemplate[] = [
   // ------------------
@@ -11,9 +26,15 @@ export const ACHIEVEMENT_TEMPLATES: AchievementTemplate[] = [
     name: 'Base {level} Stats',
     metric: Metric.OVERALL,
     measure: 'levels',
-    thresholds: [273_742, 737_627, 1_986_068, 5_346_332, 13_034_431].map(i => i * REAL_SKILLS.length),
+    thresholds: [
+      getExpForLevel(60) * REAL_SKILLS.length,
+      getExpForLevel(70) * REAL_SKILLS.length,
+      getExpForLevel(80) * REAL_SKILLS.length,
+      getExpForLevel(90) * REAL_SKILLS.length,
+      getExpForLevel(99) * REAL_SKILLS.length
+    ],
     getCurrentValue: (snapshot: Snapshot, threshold: number) => {
-      return getCappedExp(snapshot, threshold / REAL_SKILLS.length);
+      return Math.floor(getCappedExp(snapshot, threshold / REAL_SKILLS.length));
     }
   },
   // ------------------
@@ -139,6 +160,11 @@ export const ACHIEVEMENT_TEMPLATES: AchievementTemplate[] = [
     metric: Metric.CONSTRUCTION,
     thresholds: [13_034_431, 50_000_000, 100_000_000, 200_000_000]
   },
+  {
+    name: '{threshold} Sailing',
+    metric: Metric.SAILING,
+    thresholds: [13_034_431, 50_000_000, 100_000_000, 200_000_000]
+  },
   // -----------------
   // BOSS ACHIEVEMENTS
   // -----------------
@@ -248,6 +274,11 @@ export const ACHIEVEMENT_TEMPLATES: AchievementTemplate[] = [
     thresholds: [500, 1000, 5000, 10_000]
   },
   {
+    name: '{threshold} Doom of Mokhaiotl kills',
+    metric: Metric.DOOM_OF_MOKHAIOTL,
+    thresholds: [100, 500, 1_000, 5_000]
+  },
+  {
     name: '{threshold} Duke Sucellus kills',
     metric: Metric.DUKE_SUCELLUS,
     thresholds: [500, 1000, 5000, 10_000]
@@ -350,6 +381,11 @@ export const ACHIEVEMENT_TEMPLATES: AchievementTemplate[] = [
   {
     name: '{threshold} Scurrius kills',
     metric: Metric.SCURRIUS,
+    thresholds: [500, 1000, 5000, 10_000]
+  },
+  {
+    name: '{threshold} Shellbane Gryphon kills',
+    metric: Metric.SHELLBANE_GRYPHON,
     thresholds: [500, 1000, 5000, 10_000]
   },
   {

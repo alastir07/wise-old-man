@@ -1,4 +1,5 @@
-import prisma, { NameChange, NameChangeStatus } from '../../../../prisma';
+import prisma from '../../../../prisma';
+import { NameChange, NameChangeStatus, PlayerAnnotationType } from '../../../../types';
 import { NotFoundError } from '../../../errors';
 import { standardize } from '../../players/player.utils';
 
@@ -7,7 +8,12 @@ async function findPlayerNameChanges(username: string): Promise<NameChange[]> {
   const nameChanges = await prisma.nameChange.findMany({
     where: {
       player: {
-        username: standardize(username)
+        username: standardize(username),
+        annotations: {
+          none: {
+            type: PlayerAnnotationType.OPT_OUT
+          }
+        }
       },
       status: NameChangeStatus.APPROVED
     },

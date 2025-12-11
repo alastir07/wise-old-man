@@ -5,15 +5,12 @@ import { useSearchParams } from "next/navigation";
 import { ColumnDef } from "@tanstack/react-table";
 import { useMutation } from "@tanstack/react-query";
 import {
-  CompetitionDetails,
+  CompetitionDetailsResponse,
   CompetitionType,
   Metric,
   MetricProps,
-  ParticipationWithPlayerAndProgress,
-  Player,
+  PlayerResponse,
   PlayerStatus,
-  isActivity,
-  isBoss,
   isSkill,
 } from "@wise-old-man/utils";
 import { cn } from "~/utils/styling";
@@ -34,7 +31,7 @@ import LoadingIcon from "~/assets/loading.svg";
 
 interface ParticipantsTableProps {
   metric: Metric;
-  competition: CompetitionDetails;
+  competition: CompetitionDetailsResponse;
   teamName?: string;
 }
 
@@ -103,8 +100,8 @@ export function ParticipantsTable(props: ParticipantsTableProps) {
   );
 }
 
-function getColumnDefinitions(metric: Metric, competition: CompetitionDetails) {
-  const columns: ColumnDef<ParticipationWithPlayerAndProgress>[] = [
+function getColumnDefinitions(metric: Metric, competition: CompetitionDetailsResponse) {
+  const columns: ColumnDef<CompetitionDetailsResponse["participations"][number]>[] = [
     {
       id: "rank",
       header: ({ column }) => {
@@ -226,8 +223,8 @@ function getColumnDefinitions(metric: Metric, competition: CompetitionDetails) {
 
 function ParticipantStartCell(props: {
   metric: Metric;
-  competition: CompetitionDetails;
-  participant: ParticipationWithPlayerAndProgress;
+  competition: CompetitionDetailsResponse;
+  participant: CompetitionDetailsResponse["participations"][number];
 }) {
   const { metric, competition, participant } = props;
   const { player, progress } = participant;
@@ -242,36 +239,6 @@ function ParticipantStartCell(props: {
         </TooltipTrigger>
         <TooltipContent>
           This player hasn&apos;t yet been updated since the competition started.
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  if (isBoss(metric) && MetricProps[metric].minimumValue > progress.start) {
-    const { name, minimumValue } = MetricProps[metric];
-
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span>&lt; {minimumValue}</span>
-        </TooltipTrigger>
-        <TooltipContent>
-          The Hiscores only start showing {name} kills at {minimumValue} kc.
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  if (isActivity(metric) && MetricProps[metric].minimumValue > progress.start) {
-    const { name, minimumValue } = MetricProps[metric];
-
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span>&lt; {minimumValue}</span>
-        </TooltipTrigger>
-        <TooltipContent>
-          The Hiscores only start showing {name} after {minimumValue}+ score.
         </TooltipContent>
       </Tooltip>
     );
@@ -293,8 +260,8 @@ function ParticipantStartCell(props: {
 
 function ParticipantEndCell(props: {
   metric: Metric;
-  competition: CompetitionDetails;
-  participant: ParticipationWithPlayerAndProgress;
+  competition: CompetitionDetailsResponse;
+  participant: CompetitionDetailsResponse["participations"][number];
 }) {
   const { metric, competition, participant } = props;
 
@@ -326,36 +293,6 @@ function ParticipantEndCell(props: {
     );
   }
 
-  if (isBoss(metric) && MetricProps[metric].minimumValue > progress.end) {
-    const { name, minimumValue } = MetricProps[metric];
-
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span>&lt; {minimumValue}</span>
-        </TooltipTrigger>
-        <TooltipContent>
-          The Hiscores only start showing {name} kills at {minimumValue} kc.
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  if (isActivity(metric) && MetricProps[metric].minimumValue > progress.end) {
-    const { name, minimumValue } = MetricProps[metric];
-
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span>&lt; {minimumValue}</span>
-        </TooltipTrigger>
-        <TooltipContent>
-          The Hiscores only start showing {name} after {minimumValue}+ score.
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
   if (progress.end === -1) {
     return (
       <Tooltip>
@@ -370,7 +307,10 @@ function ParticipantEndCell(props: {
   return <FormattedNumber value={progress.end} />;
 }
 
-function UpdateParticipantCell(props: { player: Player; competition: CompetitionDetails }) {
+function UpdateParticipantCell(props: {
+  player: PlayerResponse;
+  competition: CompetitionDetailsResponse;
+}) {
   const { player, competition } = props;
 
   const toast = useToast();

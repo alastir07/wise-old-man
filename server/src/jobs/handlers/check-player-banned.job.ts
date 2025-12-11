@@ -3,7 +3,7 @@ import { standardize } from '../../api/modules/players/player.utils';
 import prisma from '../../prisma';
 import { getRuneMetricsBannedStatus } from '../../services/jagex.service';
 import logger from '../../services/logging.service';
-import { PlayerStatus } from '../../utils';
+import { PlayerStatus } from '../../types';
 import { Job } from '../job.class';
 import { JobOptions } from '../types/job-options.type';
 
@@ -13,8 +13,19 @@ interface Payload {
 
 export class CheckPlayerBannedJob extends Job<Payload> {
   static options: JobOptions = {
-    rateLimiter: { max: 1, duration: 5000 }
+    rateLimiter: {
+      max: 1,
+      duration: 5000
+    },
+    backoff: {
+      type: 'exponential',
+      delay: 600_000
+    }
   };
+
+  static getUniqueJobId(payload: Payload) {
+    return payload.username;
+  }
 
   async execute(payload: Payload) {
     if (process.env.NODE_ENV === 'test') {

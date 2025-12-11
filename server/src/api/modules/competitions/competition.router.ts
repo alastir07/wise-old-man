@@ -1,7 +1,15 @@
-import { Router } from 'express';
+import { isErrored } from '@attio/fetchable';
+import { NextFunction, Request, Response, Router } from 'express';
 import { z } from 'zod';
 import logger from '../../../services/logging.service';
-import { CompetitionCSVTableType, CompetitionStatus, CompetitionType, Metric, Team } from '../../../utils';
+import { CompetitionCSVTableType, CompetitionStatus, CompetitionType, Metric } from '../../../types';
+import { assertNever } from '../../../utils/assert-never.util';
+import { BadRequestError, ForbiddenError, NotFoundError, ServerError } from '../../errors';
+import {
+  formatCompetitionDetailsResponse,
+  formatCompetitionResponse,
+  formatParticipantHistoryResponse
+} from '../../responses';
 import { checkAdminPermission, checkCompetitionVerificationCode } from '../../util/middlewares';
 import { getRequestIpHash } from '../../util/request';
 import { executeRequest, validateRequest } from '../../util/routing';
@@ -13,7 +21,7 @@ import { deleteCompetition } from './services/DeleteCompetitionService';
 import { editCompetition } from './services/EditCompetitionService';
 import { fetchCompetitionCSV } from './services/FetchCompetitionCSVService';
 import { fetchCompetitionDetails } from './services/FetchCompetitionDetailsService';
-import { fetchCompetitionTop5Progress } from './services/FetchTop5ProgressService';
+import { fetchCompetitionTopHistory } from './services/FetchTopHistoryService';
 import { removeParticipants } from './services/RemoveParticipantsService';
 import { removeTeams } from './services/RemoveTeamsService';
 import { resetCompetitionCode } from './services/ResetCompetitionCodeService';
@@ -38,16 +46,38 @@ router.get(
     const { title, metric, type, status, limit, offset } = req.query;
 
     const result = await searchCompetitions(title, metric, type, status, { limit, offset });
-    res.status(200).json(result);
+    const response = result.map(c => formatCompetitionResponse(c.competition, c.group));
+
+    res.status(200).json(response);
   })
 );
 
 router.post(
   '/competitions',
+  (req: Request, _res: Response, next: NextFunction) => {
+    // Temporary middleware to support both `metric` and `metrics` properties in the request body.
+    if (req.body.metrics !== undefined) {
+      return next();
+    }
+
+    if (req.body.metric === undefined) {
+      return next(new BadRequestError("Parameter 'metric' is undefined."));
+    }
+
+    const parsed = z.nativeEnum(Metric).safeParse(req.body.metric);
+
+    if (!parsed.success) {
+      return next(new BadRequestError("Invalid enum value for 'metric'."));
+    }
+
+    req.body.metrics = [parsed.data];
+
+    next();
+  },
   validateRequest({
     body: z.object({
       title: z.string().min(1).max(50),
-      metric: z.nativeEnum(Metric),
+      metrics: z.array(z.nativeEnum(Metric)).min(1),
       startsAt: getDateSchema('startsAt'),
       endsAt: getDateSchema('endsAt'),
       groupId: z.optional(z.number().int().positive()),
@@ -58,26 +88,128 @@ router.post(
   }),
   executeRequest(async (req, res) => {
     const ipHash = getRequestIpHash(req);
-    const result = await createCompetition(req.body, ipHash);
-    res.status(201).json(result);
 
-    logger.moderation(`Created competition ${result.competition.id}`, {
+    if (process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS !== 'true' && req.body.metrics.length > 1) {
+      throw new BadRequestError('Creating multi-metric competitions is not enabled yet.');
+    }
+
+    const createResult = await createCompetition(req.body, ipHash);
+
+    if (isErrored(createResult)) {
+      switch (createResult.error.code) {
+        case 'COMPETITION_START_DATE_AFTER_END_DATE':
+          throw new BadRequestError('Start date must be before the end date.');
+        case 'COMPETITION_DATES_IN_THE_PAST':
+          throw new BadRequestError('Invalid dates: All start and end dates must be in the future.');
+        case 'METRICS_MUST_BE_OF_SAME_TYPE':
+          throw new BadRequestError('All metrics must be of the same type.');
+        case 'PARTICIPANTS_AND_GROUP_MUTUALLY_EXCLUSIVE':
+          throw new BadRequestError(`Properties "participants" and "groupId" are mutually exclusive.`);
+        case 'PARTICIPANTS_AND_TEAMS_MUTUALLY_EXCLUSIVE':
+          throw new BadRequestError(`Properties "participants" and "teams" are mutually exclusive.`);
+        case 'OPTED_OUT_PLAYERS_FOUND':
+          throw new ForbiddenError(
+            'One or more players have opted out of joining competitions, so they cannot be added as participants.',
+            createResult.error.displayNames
+          );
+        case 'FAILED_TO_GENERATE_VERIFICATION_CODE':
+          throw createResult.error;
+        case 'FAILED_TO_CREATE_COMPETITION':
+          throw new ServerError('Failed to create the competition. Please try again later.');
+        case 'FAILED_TO_VALIDATE_PARTICIPANTS': {
+          switch (createResult.error.subError.code) {
+            case 'INVALID_USERNAMES_FOUND':
+              throw new BadRequestError(
+                `Found invalid usernames: Names must be 1-12 characters long, contain no special characters, and/or contain no space at the beginning or end of the name.`,
+                createResult.error.subError.usernames
+              );
+            case 'DUPLICATE_USERNAMES_FOUND':
+              throw new BadRequestError(`Found repeated usernames.`, createResult.error.subError.usernames);
+            default:
+              throw assertNever(createResult.error.subError);
+          }
+        }
+        case 'FAILED_TO_VALIDATE_TEAMS': {
+          switch (createResult.error.subError.code) {
+            case 'INVALID_USERNAMES_FOUND':
+              throw new BadRequestError(
+                `Found invalid usernames: Names must be 1-12 characters long, contain no special characters, and/or contain no space at the beginning or end of the name.`,
+                createResult.error.subError.usernames
+              );
+            case 'DUPLICATE_USERNAMES_FOUND':
+              throw new BadRequestError(`Found repeated usernames.`, createResult.error.subError.usernames);
+            case 'DUPLICATE_TEAM_NAMES_FOUND':
+              throw new BadRequestError(`Found repeated team names.`, createResult.error.subError.teamNames);
+            default:
+              throw assertNever(createResult.error.subError);
+          }
+        }
+        case 'FAILED_TO_VERIFY_GROUP_VERIFICATION_CODE': {
+          switch (createResult.error.subError.code) {
+            case 'GROUP_NOT_FOUND':
+              throw new NotFoundError('Group not found.');
+            case 'INVALID_GROUP_VERIFICATION_CODE':
+              throw new BadRequestError('Invalid group verification code.');
+            case 'INCORRECT_GROUP_VERIFICATION_CODE':
+              throw new ForbiddenError('Incorrect group verification code.');
+            default:
+              throw assertNever(createResult.error.subError);
+          }
+        }
+        default:
+          assertNever(createResult.error);
+      }
+    }
+
+    const { competition, verificationCode } = createResult.value;
+
+    logger.moderation(`Created competition ${competition.id}`, {
       timestamp: new Date().toISOString(),
       ipHash
     });
+
+    const details = await fetchCompetitionDetails(competition.id);
+
+    const response = {
+      verificationCode: verificationCode,
+      competition: formatCompetitionDetailsResponse(
+        details.competition,
+        details.metrics,
+        details.group,
+        details.participations
+      )
+    };
+
+    res.status(201).json(response);
   })
 );
 
 router.put(
   '/competitions/:id',
   checkCompetitionVerificationCode,
+  (req: unknown, _res: Response, next: NextFunction) => {
+    // Temporary middleware to support both `metric` and `metrics` properties in the request body.
+    if ((req as Request).body.metric === undefined) {
+      return next();
+    }
+
+    const parsed = z.nativeEnum(Metric).safeParse((req as Request).body.metric);
+
+    if (!parsed.success) {
+      return next(new BadRequestError("Invalid enum value for 'metric'."));
+    }
+
+    (req as Request).body.metrics = [parsed.data];
+
+    next();
+  },
   validateRequest({
     params: z.object({
       id: z.coerce.number().int().positive()
     }),
     body: z.object({
       title: z.optional(z.string().min(1).max(50)),
-      metric: z.optional(z.nativeEnum(Metric)),
+      metrics: z.optional(z.array(z.nativeEnum(Metric)).min(1)),
       startsAt: z.optional(getDateSchema('startsAt')),
       endsAt: z.optional(getDateSchema('endsAt')),
       participants: z.optional(z.array(z.string())),
@@ -87,13 +219,85 @@ router.put(
   executeRequest(async (req, res) => {
     const { id } = req.params;
 
-    const result = await editCompetition(id, req.body);
-    res.status(200).json(result);
+    if (
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS !== 'true' &&
+      req.body.metrics !== undefined &&
+      req.body.metrics.length > 1
+    ) {
+      throw new BadRequestError('Creating multi-metric competitions is not enabled yet.');
+    }
 
-    logger.moderation(`Edited competition ${result.id}`, {
+    const updateResult = await editCompetition(id, req.body);
+
+    if (isErrored(updateResult)) {
+      switch (updateResult.error.code) {
+        case 'COMPETITION_NOT_FOUND':
+          throw new NotFoundError('Competition not found.');
+        case 'COMPETITION_START_DATE_AFTER_END_DATE':
+          throw new BadRequestError('Start date must be before the end date.');
+        case 'METRICS_MUST_BE_OF_SAME_TYPE':
+          throw new BadRequestError('All metrics must be of the same type.');
+        case 'PARTICIPANTS_AND_TEAMS_MUTUALLY_EXCLUSIVE':
+          throw new BadRequestError(`Properties "participants" and "teams" are mutually exclusive.`);
+        case 'NOTHING_TO_UPDATE':
+          throw new BadRequestError('Nothing to update.');
+        case 'COMPETITION_TYPE_CANNOT_BE_CHANGED':
+          throw new BadRequestError('The competition type cannot be changed.');
+        case 'OPTED_OUT_PLAYERS_FOUND':
+          throw new ForbiddenError(
+            'One or more players have opted out of joining competitions, so they cannot be added as participants.',
+            updateResult.error.displayNames
+          );
+        case 'FAILED_TO_UPDATE_COMPETITION':
+          throw new ServerError('Failed to update the competition. Please try again later.');
+        case 'FAILED_TO_VALIDATE_PARTICIPANTS': {
+          switch (updateResult.error.subError.code) {
+            case 'INVALID_USERNAMES_FOUND':
+              throw new BadRequestError(
+                `Found invalid usernames: Names must be 1-12 characters long, contain no special characters, and/or contain no space at the beginning or end of the name.`,
+                updateResult.error.subError.usernames
+              );
+            case 'DUPLICATE_USERNAMES_FOUND':
+              throw new BadRequestError(`Found repeated usernames.`, updateResult.error.subError.usernames);
+            default:
+              throw assertNever(updateResult.error.subError);
+          }
+        }
+        case 'FAILED_TO_VALIDATE_TEAMS': {
+          switch (updateResult.error.subError.code) {
+            case 'INVALID_USERNAMES_FOUND':
+              throw new BadRequestError(
+                `Found invalid usernames: Names must be 1-12 characters long, contain no special characters, and/or contain no space at the beginning or end of the name.`,
+                updateResult.error.subError.usernames
+              );
+            case 'DUPLICATE_USERNAMES_FOUND':
+              throw new BadRequestError(`Found repeated usernames.`, updateResult.error.subError.usernames);
+            case 'DUPLICATE_TEAM_NAMES_FOUND':
+              throw new BadRequestError(`Found repeated team names.`, updateResult.error.subError.teamNames);
+            default:
+              throw assertNever(updateResult.error.subError);
+          }
+        }
+        default:
+          assertNever(updateResult.error);
+      }
+    }
+
+    logger.moderation(`Edited competition ${updateResult.value.id}`, {
       timestamp: new Date().toISOString(),
       ipHash: getRequestIpHash(req)
     });
+
+    const details = await fetchCompetitionDetails(updateResult.value.id);
+
+    const response = formatCompetitionDetailsResponse(
+      details.competition,
+      details.metrics,
+      details.group,
+      details.participations
+    );
+
+    res.status(200).json(response);
   })
 );
 
@@ -111,8 +315,16 @@ router.get(
     const { id } = req.params;
     const { metric } = req.query;
 
-    const result = await fetchCompetitionDetails(id, metric);
-    res.status(200).json(result);
+    const details = await fetchCompetitionDetails(id, metric);
+
+    const response = formatCompetitionDetailsResponse(
+      details.competition,
+      details.metrics,
+      details.group,
+      details.participations
+    );
+
+    res.status(200).json(response);
   })
 );
 
@@ -151,8 +363,10 @@ router.get(
     const { id } = req.params;
     const { metric } = req.query;
 
-    const result = await fetchCompetitionTop5Progress(id, metric);
-    res.status(200).json(result);
+    const results = await fetchCompetitionTopHistory(id, metric);
+    const response = results.map(({ player, history }) => formatParticipantHistoryResponse(player, history));
+
+    res.status(200).json(response);
   })
 );
 
@@ -238,7 +452,7 @@ router.post(
     const { id } = req.params;
     const { teams } = req.body;
 
-    const { count } = await addTeams(id, teams as Team[]);
+    const { count } = await addTeams(id, teams);
 
     res.status(200).json({
       count,

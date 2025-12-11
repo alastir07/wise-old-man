@@ -1,13 +1,13 @@
-import { Job } from '../job.class';
-import prisma from '../../prisma';
+import { eventEmitter, EventType } from '../../api/events';
 import {
   calculatePastDates,
   getAchievementDefinitions
 } from '../../api/modules/achievements/achievement.utils';
 import { findPlayerSnapshots } from '../../api/modules/snapshots/services/FindPlayerSnapshotsService';
 import { POST_RELEASE_HISCORE_ADDITIONS } from '../../api/modules/snapshots/snapshot.utils';
-import { getMetricValueKey } from '../../utils';
-import { eventEmitter, EventType } from '../../api/events';
+import prisma from '../../prisma';
+import { getMetricValueKey } from '../../utils/get-metric-value-key.util';
+import { Job } from '../job.class';
 import { JobOptions } from '../types/job-options.type';
 
 const ALL_DEFINITIONS = getAchievementDefinitions();
@@ -20,15 +20,14 @@ interface Payload {
 
 export class SyncPlayerAchievementsJob extends Job<Payload> {
   static options: JobOptions = {
-    maxConcurrent: 5
+    maxConcurrent: 4
   };
 
-  async execute(payload: Payload) {
-    // This can be deleted in the future
-    if (!('previousUpdatedAt' in payload)) {
-      return;
-    }
+  static getUniqueJobId(payload: Payload) {
+    return [payload.username, payload.previousUpdatedAt?.getTime()].join('_');
+  }
 
+  async execute(payload: Payload) {
     const playerAndSnapshot = await prisma.player.findFirst({
       where: {
         username: payload.username

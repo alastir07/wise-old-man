@@ -21,6 +21,10 @@ class JobManager {
     this.workers = [];
   }
 
+  getQueues() {
+    return this.queues;
+  }
+
   /**
    * This function is used to run a job handler directly, without adding it to the queue.
    * This should be used sparingly, as it bypasses the queue system and does not allow for retrying jobs.
@@ -71,27 +75,26 @@ class JobManager {
     }
 
     const opts: BullJobOptions = {
-      ...(options || {}),
-      attempts: options?.attempts ?? 3,
+      ...(options ?? {}),
       priority: options?.priority ?? JobPriority.MEDIUM
     };
 
     if (payload !== undefined) {
-      opts.jobId = this.getUniqueJobId(payload);
+      // @ts-expect-error -- 🤷‍♂️
+      opts.jobId = JOB_HANDLER_MAP[type].getUniqueJobId(payload);
     }
 
     await matchingQueue.add(type, payload, opts);
 
-    logger.info(`[v2] Added job: ${type}`, opts.jobId, true);
-  }
-
-  getUniqueJobId(payload: unknown) {
-    if (!payload) {
-      return undefined;
+    if (
+      type === JobType.DISPATCH_MEMBER_ACHIEVEMENTS_DISCORD_EVENT &&
+      'username' in payload &&
+      payload.username === 'psikoi ii'
+    ) {
+      prometheus.trackGenericMetric('test-added-job');
     }
 
-    // Temporary, this should be fixed so that every job defines its own unique ID based on the payload shape
-    return JSON.stringify(payload);
+    logger.info(`[v2] Added job: ${type}`, opts.jobId, true);
   }
 
   async handleJob(bullJob: BullJob, jobHandler: Job<unknown>) {
@@ -99,31 +102,31 @@ class JobManager {
     const attemptTag = maxAttempts > 1 ? `(#${bullJob.attemptsMade})` : '';
 
     const endTimer = prometheus.trackJob();
+    logger.info(`[v2] Executing job: ${bullJob.name} ${attemptTag}`, bullJob.opts.jobId, true);
 
     try {
-      logger.info(`[v2] Executing job: ${bullJob.name} ${attemptTag}`, bullJob.opts.jobId, true);
-
       await jobHandler.execute(bullJob.data);
+
       endTimer({ jobName: bullJob.name, status: 1 });
-      await jobHandler.onSuccess(bullJob.data);
+      logger.info(`[v2] Completed job: ${bullJob.name}`, { ...bullJob.data }, true);
     } catch (error) {
       endTimer({ jobName: bullJob.name, status: 0 });
       logger.error(`[v2] Failed job: ${bullJob.name}`, { ...bullJob.data, error }, true);
 
-      await jobHandler.onFailure(bullJob.data, error);
-
-      if (bullJob.attemptsMade >= maxAttempts) {
-        await jobHandler.onFailedAllAttempts(bullJob.data, error);
+      /**
+       * Bull-board only shows errors if they're instances of the Error class.
+       * If we throw a plain object, it won't show up in the UI.
+       */
+      if (!(error instanceof Error)) {
+        throw new Error(JSON.stringify(error));
       }
 
       throw error;
     }
   }
 
-  async init() {
+  initQueues() {
     if (process.env.NODE_ENV === 'test') return;
-
-    const isMainThread = getThreadIndex() === 0 || process.env.NODE_ENV === 'development';
 
     for (const [jobType, jobClass] of Object.entries(JOB_HANDLER_MAP)) {
       const { options } = jobClass;
@@ -131,34 +134,61 @@ class JobManager {
       const queue = new Queue(jobType, {
         prefix: REDIS_PREFIX,
         connection: REDIS_CONFIG,
-        defaultJobOptions: { removeOnComplete: true, removeOnFail: true, ...(options || {}) }
+        defaultJobOptions: {
+          attempts: 5,
+          backoff: {
+            type: 'exponential',
+            delay: 1000
+          },
+          removeOnComplete: {
+            age: 60,
+            count: 100
+          },
+          removeOnFail: {
+            age: 60,
+            count: 100
+          },
+          ...(options ?? {})
+        }
       });
 
       this.queues.push(queue);
+    }
+  }
 
-      if (getThreadIndex() !== 2) {
-        // Currently disabling job workers on a given thread
-        // to monitor the impact it has on CPU and memory usage
-        const worker = new Worker(jobType, bullJob => this.handleJob(bullJob, new jobClass(this)), {
-          prefix: REDIS_PREFIX,
-          limiter: options?.rateLimiter,
-          connection: REDIS_CONFIG,
-          concurrency: options.maxConcurrent ?? 1,
-          autorun: true
-        });
+  async initWorkers() {
+    if (process.env.NODE_ENV === 'test') return;
 
-        this.workers.push(worker);
+    const cronJobTypes = CRON_CONFIG.map(c => c.type);
+
+    // If running through pm2 (production), only run cronjobs on the "main" thread (index 0).
+    // Otherwise, on a 4 core server, every cronjob would run 4x as often.
+    const isMainThread = getThreadIndex() === 0 || process.env.NODE_ENV === 'development';
+
+    for (const [jobType, jobClass] of Object.entries(JOB_HANDLER_MAP)) {
+      const { options } = jobClass;
+
+      if (cronJobTypes.includes(jobType) && !isMainThread) {
+        continue;
       }
+
+      const worker = new Worker(jobType, bullJob => this.handleJob(bullJob, new jobClass(this, bullJob)), {
+        prefix: REDIS_PREFIX,
+        limiter: options?.rateLimiter,
+        connection: REDIS_CONFIG,
+        concurrency: options.maxConcurrent ?? 1,
+        autorun: true
+      });
+
+      this.workers.push(worker);
+    }
+
+    if (!isMainThread) {
+      return;
     }
 
     // sleep for 5 seconds to allow the workers to start up
     await new Promise(resolve => setTimeout(resolve, 5_000));
-
-    // If running through pm2 (production), only run cronjobs on the "main" thread (index 0).
-    // Otherwise, on a 4 core server, every cronjob would run 4x as often.
-    if (!isMainThread) {
-      return;
-    }
 
     for (const queue of this.queues) {
       const activeJobs = await queue.getRepeatableJobs();

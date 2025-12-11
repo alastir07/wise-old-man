@@ -1,34 +1,29 @@
 import axios from 'axios';
 import MockAdapter from 'axios-mock-adapter';
 import supertest from 'supertest';
-import apiServer from '../../../src/api';
+import APIInstance from '../../../src/api';
 import { eventEmitter } from '../../../src/api/events';
 import * as GroupMembersJoinedEvent from '../../../src/api/events/handlers/group-members-joined.event';
 import * as NameChangeCreatedEvent from '../../../src/api/events/handlers/name-change-created.event';
 import * as PlayerArchivedEvent from '../../../src/api/events/handlers/player-archived.event';
 import * as PlayerNameChangedEvent from '../../../src/api/events/handlers/player-name-changed.event';
-import { parseHiscoresSnapshot } from '../../../src/api/modules/snapshots/snapshot.utils';
+import { buildHiscoresSnapshot } from '../../../src/api/modules/snapshots/services/BuildHiscoresSnapshot';
+import { jobManager, JobType } from '../../../src/jobs';
 import prisma from '../../../src/prisma';
+import { HiscoresDataSchema } from '../../../src/services/jagex.service';
 import { redisClient } from '../../../src/services/redis.service';
-import {
-  getMetricRankKey,
-  getMetricValueKey,
-  METRICS,
-  PlayerAnnotationType,
-  PlayerStatus,
-  PlayerType
-} from '../../../src/utils';
-import { readFile, registerHiscoresMock, resetDatabase, sleep } from '../../utils';
+import { METRICS, PlayerAnnotationType, PlayerStatus, PlayerType } from '../../../src/types';
+import { getMetricRankKey } from '../../../src/utils/get-metric-rank-key.util';
+import { getMetricValueKey } from '../../../src/utils/get-metric-value-key.util';
+import { modifyRawHiscoresData, readFile, registerHiscoresMock, resetDatabase, sleep } from '../../utils';
 
-const api = supertest(apiServer.express);
+const api = supertest(new APIInstance().init().express);
 const axiosMock = new MockAdapter(axios, { onNoMatch: 'passthrough' });
 
 const groupMembersJoinedEvent = jest.spyOn(GroupMembersJoinedEvent, 'handler');
 const playerArchivedEvent = jest.spyOn(PlayerArchivedEvent, 'handler');
 const playerNameChangedEvent = jest.spyOn(PlayerNameChangedEvent, 'handler');
 const nameChangeCreatedEvent = jest.spyOn(NameChangeCreatedEvent, 'handler');
-
-const HISCORES_FILE_PATH = `${__dirname}/../../data/hiscores/psikoi_hiscores.txt`;
 
 const globalData = {
   hiscoresRawData: '',
@@ -49,7 +44,7 @@ beforeAll(async () => {
   await resetDatabase();
   await redisClient.flushall();
 
-  globalData.hiscoresRawData = await readFile(HISCORES_FILE_PATH);
+  globalData.hiscoresRawData = await readFile(`${__dirname}/../../data/hiscores/psikoi_hiscores.json`);
 
   // Mock regular hiscores data, and block any ironman requests
   registerHiscoresMock(axiosMock, {
@@ -752,8 +747,6 @@ describe('Names API', () => {
         })
       );
 
-      playerArchivedEvent;
-
       const archive = (await prisma.playerArchive.findFirst({
         where: {
           playerId: newPlayerId,
@@ -927,6 +920,21 @@ describe('Names API', () => {
       });
 
       // Check if none of the pre-transition name changes have been transfered
+      const filteredMainNameChanges = await api.get(`/players/USBC/names`);
+
+      expect(filteredMainNameChanges.status).toBe(200);
+      // Should be 0 because name changes for opted out players are filtered out
+      expect(filteredMainNameChanges.body.length).toBe(0);
+
+      await prisma.playerAnnotation.delete({
+        where: {
+          playerId_type: {
+            playerId: oldPlayerId,
+            type: PlayerAnnotationType.OPT_OUT
+          }
+        }
+      });
+
       const mainNameChangesResponse = await api.get(`/players/USBC/names`);
 
       expect(mainNameChangesResponse.status).toBe(200);
@@ -1250,6 +1258,135 @@ describe('Names API', () => {
 
       expect(approvedNameChange!.reviewContext).toBe(null);
     });
+
+    it('should recalculate competition participations on approval', async () => {
+      // Setup the "old player"
+      let modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
+        { hiscoresMetricName: 'Firemaking', value: 4_500_000 }
+      ]);
+
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: { statusCode: 200, rawData: modifiedRawData },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+
+      const oldPlayerUpdateResponse = await api.post(`/players/superman`);
+      expect(oldPlayerUpdateResponse.status).toBe(201);
+      await sleep(100);
+
+      const playerSnapshot = await prisma.snapshot.findFirst({
+        where: {
+          playerId: oldPlayerUpdateResponse.body.id
+        }
+      });
+      expect(playerSnapshot).not.toBeNull();
+
+      await prisma.snapshot.update({
+        where: {
+          id: playerSnapshot!.id
+        },
+        data: {
+          createdAt: new Date(Date.now() - 1000 * 60 * 60 * 12) // 12 hours ago
+        }
+      });
+
+      const createCompetitionResponse = await api.post('/competitions').send({
+        title: 'Test',
+        metric: 'firemaking',
+        startsAt: new Date(Date.now() + 1000),
+        endsAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
+        participants: ['clark', 'lex']
+      });
+      expect(createCompetitionResponse.status).toBe(201);
+
+      const fakeStartDate = new Date(Date.now() - 1000 * 60 * 60 * 24);
+
+      // Force-update the competition start date to be in the past
+      await prisma.competition.update({
+        where: { id: createCompetitionResponse.body.competition.id },
+        data: {
+          startsAt: fakeStartDate
+        }
+      });
+
+      modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
+        { hiscoresMetricName: 'Firemaking', value: 5_000_000 }
+      ]);
+
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: { statusCode: 200, rawData: modifiedRawData },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+
+      const firstPlayerUpdateResponse = await api.post(`/players/clark`);
+      expect(firstPlayerUpdateResponse.status).toBe(200);
+      await sleep(100);
+
+      modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawData, [
+        { hiscoresMetricName: 'Firemaking', value: 7_500_000 }
+      ]);
+
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: { statusCode: 200, rawData: modifiedRawData },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+
+      const secondPlayerUpdateResponse = await api.post(`/players/clark`);
+      expect(secondPlayerUpdateResponse.status).toBe(200);
+      await sleep(100);
+
+      const firstDetailsResponse = await api.get(
+        `/competitions/${createCompetitionResponse.body.competition.id}`
+      );
+      expect(firstDetailsResponse.status).toBe(200);
+      expect(firstDetailsResponse.body.participations[0].progress).toMatchObject({
+        start: 5_000_000,
+        end: 7_500_000,
+        gained: 2_500_000
+      });
+
+      // Player "superman" has snapshots from 12 horus ago at 4.5m exp
+      // Player "clark" has snapshots from seconds ago at 5m exp
+      // Name change "superman" -> "clark" would merge these two players,
+      // so we need to recalculate the participations for the competition,
+      // as their real progress is 4.5m -> 7.5m = 3m gained
+
+      const submitNameChangeResponse = await api.post(`/names`).send({
+        oldName: 'superman',
+        newName: 'clark'
+      });
+      expect(submitNameChangeResponse.status).toBe(201);
+
+      const approveNameChangeResponse = await api
+        .post(`/names/${submitNameChangeResponse.body.id}/approve`)
+        .send({ adminPassword: process.env.ADMIN_PASSWORD });
+
+      expect(approveNameChangeResponse.status).toBe(200);
+
+      expect(playerNameChangedEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          username: 'clark',
+          previousDisplayName: 'superman'
+        })
+      );
+
+      // The "playerNameChangedEvent" mock prevents the actual event from being emitted,
+      // so let's manually dispatch the job to test the recalculation
+      await jobManager.runAsync(JobType.SYNC_PLAYER_COMPETITION_PARTICIPATIONS, {
+        username: 'clark',
+        forceRecalculate: true
+      });
+
+      const secondDetailsResponse = await api.get(
+        `/competitions/${createCompetitionResponse.body.competition.id}`
+      );
+      expect(secondDetailsResponse.status).toBe(200);
+      expect(secondDetailsResponse.body.participations[0].progress).toMatchObject({
+        start: 4_500_000,
+        end: 7_500_000,
+        gained: 3_000_000
+      });
+    });
   });
 
   describe('7 - Listing Group Name Changes', () => {
@@ -1512,7 +1649,10 @@ async function seedPreTransitionData(oldPlayerId: number, newPlayerId: number) {
 
   const filteredSnapshotData = {};
 
-  const snapshotData = await parseHiscoresSnapshot(oldPlayerId, globalData.hiscoresRawData);
+  const snapshotData = buildHiscoresSnapshot(
+    oldPlayerId,
+    HiscoresDataSchema.parse(JSON.parse(globalData.hiscoresRawData))
+  );
 
   METRICS.forEach(m => {
     filteredSnapshotData[getMetricValueKey(m)] = snapshotData[getMetricValueKey(m)];
@@ -1531,7 +1671,6 @@ async function seedPreTransitionData(oldPlayerId: number, newPlayerId: number) {
   await prisma.competition.create({
     data: {
       title: 'Test Comp (Pre)',
-      metric: 'herblore',
       verificationHash: '',
       startsAt: new Date(Date.now() + 100_000),
       endsAt: new Date(Date.now() + 400_000),
@@ -1540,6 +1679,11 @@ async function seedPreTransitionData(oldPlayerId: number, newPlayerId: number) {
           { playerId: newPlayerId, createdAt: mockDate },
           { playerId: oldPlayerId, createdAt: mockDate }
         ]
+      },
+      metrics: {
+        create: {
+          metric: 'herblore'
+        }
       }
     }
   });
@@ -1627,7 +1771,10 @@ async function seedPostTransitionData(oldPlayerId: number, newPlayerId: number) 
 
   const filteredSnapshotData = {};
 
-  const snapshotData = await parseHiscoresSnapshot(oldPlayerId, globalData.hiscoresRawData);
+  const snapshotData = buildHiscoresSnapshot(
+    oldPlayerId,
+    HiscoresDataSchema.parse(JSON.parse(globalData.hiscoresRawData))
+  );
 
   METRICS.forEach(m => {
     filteredSnapshotData[getMetricValueKey(m)] = snapshotData[getMetricValueKey(m)];
@@ -1643,7 +1790,6 @@ async function seedPostTransitionData(oldPlayerId: number, newPlayerId: number) 
   await prisma.competition.create({
     data: {
       title: 'Test Comp',
-      metric: 'thieving',
       verificationHash: '',
       startsAt: new Date(Date.now() + 100_000),
       endsAt: new Date(Date.now() + 400_000),
@@ -1652,6 +1798,11 @@ async function seedPostTransitionData(oldPlayerId: number, newPlayerId: number) 
           { playerId: newPlayerId }, // this should not be transfered as oldPlayer is already on this comp
           { playerId: oldPlayerId }
         ]
+      },
+      metrics: {
+        create: {
+          metric: 'thieving'
+        }
       }
     }
   });

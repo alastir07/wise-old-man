@@ -1,22 +1,20 @@
 import axios from 'axios';
 import MockAdapter from 'axios-mock-adapter';
 import supertest from 'supertest';
-import apiServer from '../../../src/api';
+import APIInstance from '../../../src/api';
 import { eventEmitter } from '../../../src/api/events';
 import * as CompetitionCreatedEvent from '../../../src/api/events/handlers/competition-created.event';
 import * as ParticipantsJoinedEvent from '../../../src/api/events/handlers/competition-participants-joined.event';
 import prisma from '../../../src/prisma';
 import { redisClient } from '../../../src/services/redis.service';
-import { PlayerAnnotationType, PlayerType } from '../../../src/utils';
+import { PlayerAnnotationType, PlayerType } from '../../../src/types';
 import { modifyRawHiscoresData, readFile, registerHiscoresMock, resetDatabase, sleep } from '../../utils';
 
-const api = supertest(apiServer.express);
+const api = supertest(new APIInstance().init().express);
 const axiosMock = new MockAdapter(axios, { onNoMatch: 'passthrough' });
 
 const participantsJoinedEvent = jest.spyOn(ParticipantsJoinedEvent, 'handler');
 const competitionCreatedEvent = jest.spyOn(CompetitionCreatedEvent, 'handler');
-
-const HISCORES_FILE_PATH = `${__dirname}/../../data/hiscores/psikoi_hiscores.txt`;
 
 const EMPTY_DATA = { id: -1, verificationCode: '' };
 
@@ -44,7 +42,7 @@ beforeAll(async () => {
   await resetDatabase();
   await redisClient.flushall();
 
-  globalData.hiscoresRawData = await readFile(HISCORES_FILE_PATH);
+  globalData.hiscoresRawData = await readFile(`${__dirname}/../../data/hiscores/psikoi_hiscores.json`);
 
   // Mock regular hiscores data, and block any ironman requests
   registerHiscoresMock(axiosMock, {
@@ -72,7 +70,9 @@ describe('Competition API', () => {
     };
 
     it('should not create (invalid title)', async () => {
-      const response = await api.post('/competitions').send({});
+      const response = await api.post('/competitions').send({
+        metric: 'zulrah'
+      });
 
       expect(response.status).toBe(400);
       expect(response.body.message).toMatch("Parameter 'title' is undefined.");
@@ -82,7 +82,7 @@ describe('Competition API', () => {
     });
 
     it('should not create (empty title)', async () => {
-      const response = await api.post('/competitions').send({ title: '' });
+      const response = await api.post('/competitions').send({ title: '', metric: 'obor' });
 
       expect(response.status).toBe(400);
       expect(response.body.message).toMatch("Parameter 'title' must have a minimum of 1 character(s).");
@@ -92,7 +92,11 @@ describe('Competition API', () => {
     });
 
     it('should not create (undefined metric)', async () => {
-      const response = await api.post('/competitions').send({ title: 'hello' });
+      const response = await api.post('/competitions').send({
+        title: 'hello',
+        startsAt: VALID_START_DATE,
+        endsAt: VALID_END_DATE
+      });
 
       expect(response.status).toBe(400);
       expect(response.body.message).toMatch("Parameter 'metric' is undefined.");
@@ -176,7 +180,10 @@ describe('Competition API', () => {
     });
 
     it('should not create (invalid metric)', async () => {
-      const response = await api.post('/competitions').send({ ...VALID_CREATE_BASE, metric: 'sailing' });
+      const response = await api.post('/competitions').send({
+        ...VALID_CREATE_BASE,
+        metric: 'dungeoneering'
+      });
 
       expect(response.status).toBe(400);
       expect(response.body.message).toMatch("Invalid enum value for 'metric'.");
@@ -218,7 +225,7 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found 1 invalid usernames:');
+      expect(response.body.message).toMatch('Found invalid usernames:');
       expect(response.body.data).toContain('areallylongusername');
 
       expect(competitionCreatedEvent).not.toHaveBeenCalled();
@@ -233,9 +240,7 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch(
-        'Cannot include both "participants" and "teams", they are mutually exclusive.'
-      );
+      expect(response.body.message).toMatch('Properties "participants" and "teams" are mutually exclusive.');
 
       expect(competitionCreatedEvent).not.toHaveBeenCalled();
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
@@ -358,12 +363,12 @@ describe('Competition API', () => {
         ...VALID_CREATE_BASE,
         teams: [
           { name: 'WARRIORS ', participants: ['zezima', 'psikoi'] },
-          { name: '_warriors', participants: ['hydrox6', 'jakesterwars'] }
+          { name: ' warriors', participants: ['hydrox6', 'jakesterwars'] }
         ]
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found repeated team names: [warriors]');
+      expect(response.body.message).toMatch('Found repeated team names.');
 
       expect(competitionCreatedEvent).not.toHaveBeenCalled();
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
@@ -379,7 +384,7 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found repeated usernames: [zezima]');
+      expect(response.body.message).toMatch('Found repeated usernames');
 
       expect(competitionCreatedEvent).not.toHaveBeenCalled();
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
@@ -447,7 +452,9 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Cannot include both "participants" and "groupId"');
+      expect(response.body.message).toMatch(
+        'Properties "participants" and "groupId" are mutually exclusive.'
+      );
 
       expect(competitionCreatedEvent).not.toHaveBeenCalled();
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
@@ -491,7 +498,7 @@ describe('Competition API', () => {
     it('should create (no participants)', async () => {
       // Starting in 20mins, ending in a week (upcoming)
       const response = await api.post('/competitions').send({
-        title: ' Wise Old-Man___ ',
+        title: ' Wise Old-Man    ',
         metric: 'smithing',
         startsAt: VALID_START_DATE,
         endsAt: VALID_END_DATE
@@ -499,8 +506,9 @@ describe('Competition API', () => {
 
       expect(response.status).toBe(201);
       expect(response.body.competition).toMatchObject({
-        title: 'Wise Old Man',
+        title: 'Wise Old-Man',
         metric: 'smithing',
+        metrics: ['smithing'],
         startsAt: VALID_START_DATE.toISOString(),
         endsAt: VALID_END_DATE.toISOString()
       });
@@ -544,6 +552,7 @@ describe('Competition API', () => {
       expect(response.body.competition).toMatchObject({
         title: 'BOTW Zulrah #3',
         metric: 'zulrah',
+        metrics: ['zulrah'],
         startsAt: startDate.toISOString(),
         endsAt: endDate.toISOString(),
         participantCount: 4
@@ -615,6 +624,7 @@ describe('Competition API', () => {
       expect(response.body.competition).toMatchObject({
         title: 'SOTW Thieving 💰 #5', // test emoji support
         metric: 'thieving',
+        metrics: ['thieving'],
         startsAt: startDate.toISOString(),
         endsAt: endDate.toISOString(),
         participantCount: 4
@@ -665,15 +675,16 @@ describe('Competition API', () => {
         startsAt: startDate,
         endsAt: endDate,
         teams: [
-          { name: '_Warriors ', participants: [' PSIKOI', '__Zezima '] },
+          { name: ' Warriors ', participants: [' PSIKOI', '__Zezima '] },
           { name: 'Scouts ', participants: ['hydrox6', 'usbc'] }
         ]
       });
 
       expect(response.status).toBe(201);
       expect(response.body.competition).toMatchObject({
-        title: 'Soul Wars Competition',
+        title: '_Soul Wars Competition',
         metric: 'soul_wars_zeal',
+        metrics: ['soul_wars_zeal'],
         startsAt: startDate.toISOString(),
         endsAt: endDate.toISOString(),
         participantCount: 4
@@ -751,6 +762,7 @@ describe('Competition API', () => {
       expect(response.body.competition).toMatchObject({
         title: 'OVERALL Competition',
         metric: 'overall',
+        metrics: ['overall'],
         startsAt: startDate.toISOString(),
         endsAt: endDate.toISOString(),
         participantCount: 2
@@ -808,6 +820,7 @@ describe('Competition API', () => {
       expect(response.body.competition).toMatchObject({
         title: 'Fishing Competition',
         metric: 'fishing',
+        metrics: ['fishing'],
         startsAt: startDate.toISOString(),
         endsAt: endDate.toISOString(),
         groupId: globalData.testGroup.id,
@@ -840,6 +853,69 @@ describe('Competition API', () => {
 
       // Reset the timers to the current (REAL) time
       jest.useRealTimers();
+    });
+
+    it('should NOT create with empty metrics array', async () => {
+      const response = await api.post('/competitions').send({
+        title: 'Test',
+        metrics: [],
+        startsAt: VALID_START_DATE,
+        endsAt: VALID_END_DATE
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toMatch("Parameter 'metrics' must have a minimum of 1 element(s).");
+    });
+
+    it('should NOT create with multiple metrics (temporary)', async () => {
+      const response = await api.post('/competitions').send({
+        title: 'Test',
+        metrics: ['hunter', 'fishing'],
+        startsAt: VALID_START_DATE,
+        endsAt: VALID_END_DATE
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toMatch('Creating multi-metric competitions is not enabled yet.');
+    });
+
+    it('should NOT create with mixed metric types', async () => {
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'true';
+
+      const response = await api.post('/competitions').send({
+        title: 'Test',
+        metrics: ['hunter', 'zulrah'],
+        startsAt: VALID_START_DATE,
+        endsAt: VALID_END_DATE
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toMatch('All metrics must be of the same type.');
+
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'false';
+    });
+
+    it('should create with multiple metrics', async () => {
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'true';
+
+      const response = await api.post('/competitions').send({
+        title: 'Test',
+        metrics: ['hunter', 'fishing'],
+        startsAt: VALID_START_DATE,
+        endsAt: VALID_END_DATE
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.body.competition).toMatchObject({
+        metric: 'hunter',
+        metrics: ['hunter', 'fishing']
+      });
+
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'false';
+
+      await prisma.competition.delete({
+        where: { id: response.body.competition.id }
+      });
     });
   });
 
@@ -893,7 +969,7 @@ describe('Competition API', () => {
 
     it('should not edit (invalid metric)', async () => {
       const response = await api.put(`/competitions/${globalData.testCompetitionStarting.id}`).send({
-        metric: 'sailing',
+        metric: 'dungeoneering',
         verificationCode: globalData.testCompetitionStarting.verificationCode
       });
 
@@ -935,7 +1011,7 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found 1 invalid usernames:');
+      expect(response.body.message).toMatch('Found invalid usernames:');
       expect(response.body.data).toContain('areallylongusername');
 
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
@@ -1049,13 +1125,13 @@ describe('Competition API', () => {
       const response = await api.put(`/competitions/${globalData.testCompetitionEnding.id}`).send({
         verificationCode: globalData.testCompetitionEnding.verificationCode,
         teams: [
-          { name: 'warriors_', participants: ['zezima', 'psikoi'] },
+          { name: 'warriors ', participants: ['zezima', 'psikoi'] },
           { name: ' WARRIORS', participants: ['hydrox6', 'jakesterwars'] }
         ]
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found repeated team names: [warriors]');
+      expect(response.body.message).toMatch('Found repeated team names');
 
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
     });
@@ -1070,7 +1146,7 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found repeated usernames: [zezima]');
+      expect(response.body.message).toMatch('Found repeated usernames');
 
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
     });
@@ -1105,7 +1181,7 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch("The competition type cannot be changed to 'classic'.");
+      expect(response.body.message).toMatch('The competition type cannot be changed.');
 
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
     });
@@ -1117,7 +1193,7 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch("The competition type cannot be changed to 'team'.");
+      expect(response.body.message).toMatch('The competition type cannot be changed.');
 
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
     });
@@ -1254,7 +1330,7 @@ describe('Competition API', () => {
     it('should edit (own fields)', async () => {
       const response = await api.put(`/competitions/${globalData.testCompetitionStarting.id}`).send({
         verificationCode: globalData.testCompetitionStarting.verificationCode,
-        title: '_Worked! 👍 ',
+        title: ' Worked! 👍 ',
         metric: 'agility'
       });
 
@@ -1353,7 +1429,7 @@ describe('Competition API', () => {
           { name: 'Team A', participants: ['emanuel', 'gerard'] },
           { name: ' Team B', participants: ['ruben_', ' seth   _'] },
           { name: 'Team C ', participants: ['jake0011011', ' ALICE '] },
-          { name: 'Team_D', participants: ['MARIA   ', 'alexcantfly'] },
+          { name: 'Team D', participants: ['MARIA   ', 'alexcantfly'] },
           { name: 'Team_E', participants: ['alanturing', 'luigi'] }
         ],
         participants: undefined // make sure this doesn't override the new teams
@@ -1400,8 +1476,8 @@ describe('Competition API', () => {
       expect(usernameTeamMap['maria']).toBe('Team D');
 
       // brand new team was added
-      expect(usernameTeamMap['alanturing']).toBe('Team E');
-      expect(usernameTeamMap['luigi']).toBe('Team E');
+      expect(usernameTeamMap['alanturing']).toBe('Team_E');
+      expect(usernameTeamMap['luigi']).toBe('Team_E');
 
       const detailsResponse = await api.get(`/competitions/${createResponse.body.competition.id}`);
       expect(detailsResponse.status).toBe(200);
@@ -1433,7 +1509,7 @@ describe('Competition API', () => {
     it('should edit teams (and own fields)', async () => {
       const response = await api.put(`/competitions/${globalData.testCompetitionEnding.id}`).send({
         verificationCode: globalData.testCompetitionEnding.verificationCode,
-        title: '_SoulWars Competition',
+        title: ' SoulWars Competition',
         teams: [
           { name: 'Mods', participants: [' SETHMARE', 'boom__'] },
           { name: 'Contributors', participants: [' psikoi', 'RORRO', 'JAKEsterwars', '__USBC'] },
@@ -1455,6 +1531,254 @@ describe('Competition API', () => {
         })
       );
     });
+
+    it('should edit a single metric', async () => {
+      const createResponse = await api.post('/competitions').send({
+        title: 'Test Metrics',
+        startsAt: new Date(Date.now() + 1_200_000),
+        endsAt: new Date(Date.now() + 2_400_000),
+        metric: 'agility'
+      });
+
+      expect(createResponse.status).toBe(201);
+      expect(createResponse.body.competition.metric).toBe('agility');
+      expect(createResponse.body.competition.metrics).toMatchObject(['agility']);
+
+      const firstUpdateResponse = await api.put(`/competitions/${createResponse.body.competition.id}`).send({
+        verificationCode: createResponse.body.verificationCode,
+        metric: 'hunter'
+      });
+
+      expect(firstUpdateResponse.status).toBe(200);
+      expect(firstUpdateResponse.body.metric).toBe('hunter');
+      expect(firstUpdateResponse.body.metrics).toMatchObject(['hunter']);
+
+      const secondUpdateResponse = await api.put(`/competitions/${createResponse.body.competition.id}`).send({
+        verificationCode: createResponse.body.verificationCode,
+        metric: 'zulrah'
+      });
+
+      expect(secondUpdateResponse.status).toBe(200);
+      expect(secondUpdateResponse.body.metric).toBe('zulrah');
+      expect(secondUpdateResponse.body.metrics).toMatchObject(['zulrah']);
+
+      const thirdUpdateResponse = await api.put(`/competitions/${createResponse.body.competition.id}`).send({
+        verificationCode: createResponse.body.verificationCode,
+        metric: 'agility'
+      });
+
+      expect(thirdUpdateResponse.status).toBe(200);
+      expect(thirdUpdateResponse.body.metric).toBe('agility');
+      expect(thirdUpdateResponse.body.metrics).toMatchObject(['agility']);
+
+      const metrics = await prisma.competitionMetric.findMany({
+        where: {
+          competitionId: createResponse.body.competition.id
+        },
+        orderBy: {
+          createdAt: 'asc'
+        }
+      });
+
+      expect(metrics.length).toBe(3);
+
+      expect(metrics[0]).toMatchObject({
+        competitionId: createResponse.body.competition.id,
+        metric: 'agility',
+        deletedAt: null
+      });
+
+      expect(metrics[1]).toMatchObject({
+        competitionId: createResponse.body.competition.id,
+        metric: 'hunter',
+        deletedAt: expect.any(Date)
+      });
+
+      expect(metrics[2]).toMatchObject({
+        competitionId: createResponse.body.competition.id,
+        metric: 'zulrah',
+        deletedAt: expect.any(Date)
+      });
+
+      const deleteResponse = await api
+        .delete(`/competitions/${createResponse.body.competition.id}`)
+        .send({ verificationCode: createResponse.body.verificationCode });
+
+      expect(deleteResponse.status).toBe(200);
+    });
+
+    it('should edit multiple metrics', async () => {
+      const createResponse = await api.post('/competitions').send({
+        title: 'Test Metrics',
+        startsAt: new Date(Date.now() + 1_200_000),
+        endsAt: new Date(Date.now() + 2_400_000),
+        metric: 'agility'
+      });
+
+      expect(createResponse.status).toBe(201);
+      expect(createResponse.body.competition.metric).toBe('agility');
+      expect(createResponse.body.competition.metrics).toMatchObject(['agility']);
+
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'true';
+
+      const firstUpdateResponse = await api.put(`/competitions/${createResponse.body.competition.id}`).send({
+        verificationCode: createResponse.body.verificationCode,
+        metrics: ['hunter', 'firemaking']
+      });
+
+      expect(firstUpdateResponse.status).toBe(200);
+      expect(firstUpdateResponse.body.metric).toBe('hunter');
+      expect(firstUpdateResponse.body.metrics).toMatchObject(['hunter', 'firemaking']);
+
+      const secondUpdateResponse = await api.put(`/competitions/${createResponse.body.competition.id}`).send({
+        verificationCode: createResponse.body.verificationCode,
+        metrics: ['zulrah', 'wintertodt']
+      });
+
+      expect(secondUpdateResponse.status).toBe(200);
+      expect(secondUpdateResponse.body.metric).toBe('zulrah');
+      expect(secondUpdateResponse.body.metrics).toMatchObject(['zulrah', 'wintertodt']);
+
+      const thirdUpdateResponse = await api.put(`/competitions/${createResponse.body.competition.id}`).send({
+        verificationCode: createResponse.body.verificationCode,
+        metrics: ['cooking', 'agility']
+      });
+
+      expect(thirdUpdateResponse.status).toBe(200);
+      expect(thirdUpdateResponse.body.metric).toBe('agility');
+      expect(thirdUpdateResponse.body.metrics).toMatchObject(['agility', 'cooking']);
+
+      const metrics = await prisma.competitionMetric.findMany({
+        where: {
+          competitionId: createResponse.body.competition.id
+        },
+        orderBy: {
+          createdAt: 'asc'
+        }
+      });
+
+      expect(metrics.length).toBe(6);
+
+      expect(metrics[0]).toMatchObject({
+        competitionId: createResponse.body.competition.id,
+        metric: 'agility',
+        deletedAt: null
+      });
+
+      expect(metrics[1]).toMatchObject({
+        competitionId: createResponse.body.competition.id,
+        metric: 'hunter',
+        deletedAt: expect.any(Date)
+      });
+
+      expect(metrics[2]).toMatchObject({
+        competitionId: createResponse.body.competition.id,
+        metric: 'firemaking',
+        deletedAt: expect.any(Date)
+      });
+
+      expect(metrics[3]).toMatchObject({
+        competitionId: createResponse.body.competition.id,
+        metric: 'zulrah',
+        deletedAt: expect.any(Date)
+      });
+
+      expect(metrics[4]).toMatchObject({
+        competitionId: createResponse.body.competition.id,
+        metric: 'wintertodt',
+        deletedAt: expect.any(Date)
+      });
+
+      expect(metrics[5]).toMatchObject({
+        competitionId: createResponse.body.competition.id,
+        metric: 'cooking',
+        deletedAt: null
+      });
+
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'false';
+
+      const deleteResponse = await api
+        .delete(`/competitions/${createResponse.body.competition.id}`)
+        .send({ verificationCode: createResponse.body.verificationCode });
+
+      expect(deleteResponse.status).toBe(200);
+    });
+
+    it('should NOT edit an empty metrics array', async () => {
+      const createResponse = await api.post('/competitions').send({
+        title: 'Test Metrics',
+        startsAt: new Date(Date.now() + 1_200_000),
+        endsAt: new Date(Date.now() + 2_400_000),
+        metrics: ['agility']
+      });
+      expect(createResponse.status).toBe(201);
+      expect(createResponse.body.competition.metric).toBe('agility');
+
+      const editResponse = await api.put(`/competitions/${createResponse.body.competition.id}`).send({
+        verificationCode: createResponse.body.verificationCode,
+        metrics: []
+      });
+      expect(editResponse.status).toBe(400);
+      expect(editResponse.body.message).toBe("Parameter 'metrics' must have a minimum of 1 element(s).");
+
+      const deleteResponse = await api
+        .delete(`/competitions/${createResponse.body.competition.id}`)
+        .send({ verificationCode: createResponse.body.verificationCode });
+
+      expect(deleteResponse.status).toBe(200);
+    });
+
+    it('should NOT edit with multiple metrics', async () => {
+      const createResponse = await api.post('/competitions').send({
+        title: 'Test Metrics',
+        startsAt: new Date(Date.now() + 1_200_000),
+        endsAt: new Date(Date.now() + 2_400_000),
+        metrics: ['agility']
+      });
+      expect(createResponse.status).toBe(201);
+      expect(createResponse.body.competition.metric).toBe('agility');
+
+      const editResponse = await api.put(`/competitions/${createResponse.body.competition.id}`).send({
+        verificationCode: createResponse.body.verificationCode,
+        metrics: ['agility', 'hunter']
+      });
+      expect(editResponse.status).toBe(400);
+      expect(editResponse.body.message).toBe('Creating multi-metric competitions is not enabled yet.');
+
+      const deleteResponse = await api
+        .delete(`/competitions/${createResponse.body.competition.id}`)
+        .send({ verificationCode: createResponse.body.verificationCode });
+
+      expect(deleteResponse.status).toBe(200);
+    });
+
+    it('should NOT edit with mixed metric types', async () => {
+      const createResponse = await api.post('/competitions').send({
+        title: 'Test Metrics',
+        startsAt: new Date(Date.now() + 1_200_000),
+        endsAt: new Date(Date.now() + 2_400_000),
+        metrics: ['agility']
+      });
+      expect(createResponse.status).toBe(201);
+      expect(createResponse.body.competition.metric).toBe('agility');
+
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'true';
+
+      const editResponse = await api.put(`/competitions/${createResponse.body.competition.id}`).send({
+        verificationCode: createResponse.body.verificationCode,
+        metrics: ['agility', 'zulrah']
+      });
+      expect(editResponse.status).toBe(400);
+      expect(editResponse.body.message).toBe('All metrics must be of the same type.');
+
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'false';
+
+      const deleteResponse = await api
+        .delete(`/competitions/${createResponse.body.competition.id}`)
+        .send({ verificationCode: createResponse.body.verificationCode });
+
+      expect(deleteResponse.status).toBe(200);
+    });
   });
 
   describe('3 - Search', () => {
@@ -1468,7 +1792,9 @@ describe('Competition API', () => {
     });
 
     it('should not search competitions (invalid metric)', async () => {
-      const response = await api.get('/competitions').query({ metric: 'sailing' });
+      const response = await api.get('/competitions').query({
+        metric: 'dungeoneering'
+      });
 
       expect(response.status).toBe(400);
       expect(response.body.message).toBe("Invalid enum value for 'metric'.");
@@ -1786,7 +2112,7 @@ describe('Competition API', () => {
         });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found 1 invalid usernames:');
+      expect(response.body.message).toMatch('Found invalid usernames:');
 
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
     });
@@ -1800,7 +2126,7 @@ describe('Competition API', () => {
         });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found 2 invalid usernames:');
+      expect(response.body.message).toMatch('Found invalid usernames:');
 
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
     });
@@ -1814,7 +2140,7 @@ describe('Competition API', () => {
         });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found repeated usernames: [zezima, rorro]');
+      expect(response.body.message).toMatch('Found repeated usernames');
 
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
     });
@@ -2271,7 +2597,7 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found 1 invalid usernames:');
+      expect(response.body.message).toMatch('Found invalid usernames:');
       expect(response.body.data).toContain('reallylongusername');
     });
 
@@ -2324,25 +2650,25 @@ describe('Competition API', () => {
         verificationCode: globalData.testCompetitionEnding.verificationCode,
         teams: [
           { name: 'WARRIORS', participants: ['psikoi'] },
-          { name: '_warriors', participants: ['zezima'] }
+          { name: ' warriors', participants: ['zezima'] }
         ]
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found repeated team names: [warriors]');
+      expect(response.body.message).toMatch('Found repeated team names');
     });
 
     it('should not add teams (duplicate team names in database)', async () => {
       const response = await api.post(`/competitions/${globalData.testCompetitionEnding.id}/teams`).send({
         verificationCode: globalData.testCompetitionEnding.verificationCode,
         teams: [
-          { name: '__MODS', participants: ['zezima'] },
+          { name: '  MODS', participants: ['zezima'] },
           { name: 'Soldiers', participants: ['boom', 'usbc'] }
         ]
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found repeated team names: [mods]');
+      expect(response.body.message).toMatch('Found repeated team names');
     });
 
     it('should not add teams (duplicate team players in response)', async () => {
@@ -2355,7 +2681,7 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found repeated usernames: [rorro]');
+      expect(response.body.message).toMatch('Found repeated usernames');
     });
 
     it('should not add teams (duplicate team players in database)', async () => {
@@ -2365,7 +2691,7 @@ describe('Competition API', () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.message).toMatch('Found repeated usernames: [psikoi, hydrox6]');
+      expect(response.body.message).toMatch('Found repeated usernames');
 
       expect(participantsJoinedEvent).not.toHaveBeenCalled();
     });
@@ -2582,7 +2908,7 @@ describe('Competition API', () => {
 
     it('should not view details (invalid metric)', async () => {
       const response = await api.get(`/competitions/${globalData.testCompetitionStarted.id}`).query({
-        metric: 'sailing'
+        metric: 'dungeoneering'
       });
 
       expect(response.status).toBe(400);
@@ -2614,8 +2940,8 @@ describe('Competition API', () => {
         [PlayerType.REGULAR]: {
           statusCode: 200,
           rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
-            { metric: 'zulrah', value: -1 },
-            { metric: 'hunter', value: 50_000 }
+            { hiscoresMetricName: 'Zulrah', value: -1 },
+            { hiscoresMetricName: 'Hunter', value: 50_000 }
           ])
         },
         [PlayerType.IRONMAN]: { statusCode: 404 }
@@ -2630,8 +2956,8 @@ describe('Competition API', () => {
         [PlayerType.REGULAR]: {
           statusCode: 200,
           rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
-            { metric: 'zulrah', value: 500 },
-            { metric: 'hunter', value: 100_000 }
+            { hiscoresMetricName: 'Zulrah', value: 500 },
+            { hiscoresMetricName: 'Hunter', value: 100_000 }
           ])
         },
         [PlayerType.IRONMAN]: { statusCode: 404 }
@@ -2646,8 +2972,8 @@ describe('Competition API', () => {
         [PlayerType.REGULAR]: {
           statusCode: 200,
           rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
-            { metric: 'zulrah', value: 1000 },
-            { metric: 'hunter', value: 500_000 }
+            { hiscoresMetricName: 'Zulrah', value: 1000 },
+            { hiscoresMetricName: 'Hunter', value: 500_000 }
           ])
         },
         [PlayerType.IRONMAN]: { statusCode: 404 }
@@ -2668,8 +2994,8 @@ describe('Competition API', () => {
         [PlayerType.REGULAR]: {
           statusCode: 200,
           rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
-            { metric: 'zulrah', value: 60 },
-            { metric: 'hunter', value: 50_000 }
+            { hiscoresMetricName: 'Zulrah', value: 60 },
+            { hiscoresMetricName: 'Hunter', value: 50_000 }
           ])
         },
         [PlayerType.IRONMAN]: { statusCode: 404 }
@@ -2684,8 +3010,8 @@ describe('Competition API', () => {
         [PlayerType.REGULAR]: {
           statusCode: 200,
           rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
-            { metric: 'zulrah', value: 557 },
-            { metric: 'hunter', value: 110_000 }
+            { hiscoresMetricName: 'Zulrah', value: 557 },
+            { hiscoresMetricName: 'Hunter', value: 110_000 }
           ])
         },
         [PlayerType.IRONMAN]: { statusCode: 404 }
@@ -2700,8 +3026,8 @@ describe('Competition API', () => {
         [PlayerType.REGULAR]: {
           statusCode: 200,
           rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
-            { metric: 'zulrah', value: 1000 },
-            { metric: 'hunter', value: 750_000 }
+            { hiscoresMetricName: 'Zulrah', value: 1000 },
+            { hiscoresMetricName: 'Hunter', value: 750_000 }
           ])
         },
         [PlayerType.IRONMAN]: { statusCode: 404 }
@@ -2805,6 +3131,296 @@ describe('Competition API', () => {
         progress: { start: -1, end: -1, gained: 0 }
       });
     });
+
+    it('should view details for multiple metrics', async () => {
+      /**
+       * sue starts at 100k hunter, 2.4m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 100_000 },
+            { hiscoresMetricName: 'Fishing', value: 2_400_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/sue`);
+
+      /**
+       * reed starts at 14.5m hunter, 12.2m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 14_500_000 },
+            { hiscoresMetricName: 'Fishing', value: 12_200_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/reed`);
+
+      /**
+       * johnny starts at -1 hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: -1 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/johnny`);
+
+      /**
+       * ben starts at -1 hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: -1 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/ben`);
+
+      // Fake the current date to be 20 minutes ago
+      jest.useFakeTimers().setSystemTime(new Date(Date.now() - 1_200_000));
+
+      const startDate = new Date(Date.now() + 10_000);
+      const endDate = new Date(Date.now() + 10_000 + 604_800_000);
+
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'true';
+      const createResponse = await api.post('/competitions').send({
+        title: 'Test',
+        metrics: ['hunter', 'fishing'],
+        startsAt: startDate,
+        endsAt: endDate,
+        participants: ['sue', 'reed', 'johnny', 'ben']
+      });
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'false';
+
+      expect(createResponse.status).toBe(201);
+      expect(createResponse.body.competition).toMatchObject({
+        metric: 'hunter',
+        metrics: ['hunter', 'fishing']
+      });
+
+      // Reset the timers to the current (REAL) time
+      jest.useRealTimers();
+
+      /**
+       * sue ends at 900k hunter, 3.1m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 900_000 },
+            { hiscoresMetricName: 'Fishing', value: 3_100_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/sue`);
+
+      /**
+       * reed ends at 14.7m hunter, 13.2m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 14_700_000 },
+            { hiscoresMetricName: 'Fishing', value: 13_200_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/reed`);
+
+      /**
+       * johnny ends at 50k hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 50_000 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/johnny`);
+
+      /**
+       * ben ends at -1 hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: -1 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/ben`);
+
+      const totalDetailsResponse = await api.get(`/competitions/${createResponse.body.competition.id}`);
+      expect(totalDetailsResponse.status).toBe(200);
+      expect(totalDetailsResponse.body.participations.length).toBe(4);
+
+      expect(totalDetailsResponse.body.participations[0]).toMatchObject({
+        player: {
+          username: 'sue'
+        },
+        progress: {
+          start: 2_500_000, // 100k hunter, 2.4m fishing
+          end: 4_000_000, // 900k hunter, 3.1m fishing
+          gained: 1_500_000
+        },
+        levels: {
+          start: 130,
+          end: 156,
+          gained: 26
+        }
+      });
+
+      expect(totalDetailsResponse.body.participations[1]).toMatchObject({
+        player: {
+          username: 'reed'
+        },
+        progress: {
+          start: 26_700_000, // 14.5m hunter, 12.2m fishing
+          end: 27_900_000, // 14.7m hunter, 13.2m fishing
+          gained: 1_200_000
+        },
+        levels: {
+          start: 197,
+          end: 198,
+          gained: 1
+        }
+      });
+
+      expect(totalDetailsResponse.body.participations[2]).toMatchObject({
+        player: {
+          username: 'johnny'
+        },
+        progress: {
+          start: -1, // unranked hunter, unranked fishing
+          end: 50_000, // 50k hunter, -1 fishing
+          gained: 50_000
+        },
+        levels: {
+          start: 2,
+          end: 43,
+          gained: 41
+        }
+      });
+
+      expect(totalDetailsResponse.body.participations[3]).toMatchObject({
+        player: {
+          username: 'ben'
+        },
+        progress: {
+          start: -1, // unranked hunter, unranked fishing
+          end: -1, // unranked hunter, unranked fishing
+          gained: 0
+        },
+        levels: {
+          start: 2,
+          end: 2,
+          gained: 0
+        }
+      });
+
+      const fishingDetailsResponse = await api
+        .get(`/competitions/${createResponse.body.competition.id}`)
+        .query({ metric: 'fishing' });
+
+      expect(fishingDetailsResponse.status).toBe(200);
+      expect(fishingDetailsResponse.body.participations.length).toBe(4);
+
+      expect(fishingDetailsResponse.body.participations[0]).toMatchObject({
+        player: {
+          username: 'reed'
+        },
+        progress: {
+          end: 13_200_000,
+          gained: 1_000_000,
+          start: 12_200_000
+        },
+        levels: {
+          start: 98,
+          end: 99,
+          gained: 1
+        }
+      });
+
+      expect(fishingDetailsResponse.body.participations[1]).toMatchObject({
+        player: {
+          username: 'sue'
+        },
+        progress: {
+          start: 2_400_000, // 2.4m fishing
+          end: 3_100_000, // 3.1m fishing
+          gained: 700_000
+        },
+        levels: {
+          start: 81,
+          end: 84,
+          gained: 3
+        }
+      });
+
+      expect(fishingDetailsResponse.body.participations[2]).toMatchObject({
+        player: {
+          username: 'johnny'
+        },
+        progress: {
+          start: -1, //  unranked fishing
+          end: -1, // unranked fishing
+          gained: 0
+        },
+        levels: {
+          start: 1,
+          end: 1,
+          gained: 0
+        }
+      });
+
+      expect(fishingDetailsResponse.body.participations[3]).toMatchObject({
+        player: {
+          username: 'ben'
+        },
+        progress: {
+          start: -1, //  unranked fishing
+          end: -1, // unranked fishing
+          gained: 0
+        },
+        levels: {
+          start: 1,
+          end: 1,
+          gained: 0
+        }
+      });
+
+      await prisma.competition.delete({
+        where: { id: createResponse.body.competition.id }
+      });
+    });
   });
 
   describe('9 - View Top 5 Snapshots', () => {
@@ -2818,7 +3434,7 @@ describe('Competition API', () => {
     it('should not view top 5 snapshots (invalid metric)', async () => {
       const response = await api
         .get(`/competitions/${globalData.testCompetitionStarted.id}/top-history`)
-        .query({ metric: 'sailing' });
+        .query({ metric: 'dungeoneering' });
 
       expect(response.status).toBe(400);
       expect(response.body.message).toMatch("Invalid enum value for 'metric'.");
@@ -2883,6 +3499,210 @@ describe('Competition API', () => {
       expect(response.body[4].player.username).toBe('zulu');
       expect(response.body[4].history.length).toBe(0);
     });
+
+    it('should view top 5 snapshots for multiple metrics', async () => {
+      /**
+       * toblink starts at 100k hunter, 2.4m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 100_000 },
+            { hiscoresMetricName: 'Fishing', value: 2_400_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/toblink`);
+
+      /**
+       * tobilical starts at 14.5m hunter, 12.2m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 14_500_000 },
+            { hiscoresMetricName: 'Fishing', value: 12_200_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/tobilical`);
+
+      /**
+       * tobicula starts at -1 hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: -1 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/tobicula`);
+
+      /**
+       * tobinky starts at -1 hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: -1 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/tobinky`);
+
+      // Fake the current date to be 20 minutes ago
+      jest.useFakeTimers().setSystemTime(new Date(Date.now() - 1_200_000));
+
+      const startDate = new Date(Date.now() + 10_000);
+      const endDate = new Date(Date.now() + 10_000 + 604_800_000);
+
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'true';
+      const createResponse = await api.post('/competitions').send({
+        title: 'Test',
+        metrics: ['hunter', 'fishing'],
+        startsAt: startDate,
+        endsAt: endDate,
+        participants: ['toblink', 'tobilical', 'tobicula', 'tobinky']
+      });
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'false';
+
+      expect(createResponse.status).toBe(201);
+      expect(createResponse.body.competition).toMatchObject({
+        metric: 'hunter',
+        metrics: ['hunter', 'fishing']
+      });
+
+      // Reset the timers to the current (REAL) time
+      jest.useRealTimers();
+
+      /**
+       * toblink ends at 900k hunter, 3.1m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 900_000 },
+            { hiscoresMetricName: 'Fishing', value: 3_100_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/toblink`);
+
+      /**
+       * tobilical ends at 14.7m hunter, 13.2m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 14_700_000 },
+            { hiscoresMetricName: 'Fishing', value: 13_200_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/tobilical`);
+
+      /**
+       * tobicula ends at 50k hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 50_000 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/tobicula`);
+
+      /**
+       * tobinky ends at -1 hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: -1 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/tobinky`);
+
+      const totalHistoryResponse = await api.get(
+        `/competitions/${createResponse.body.competition.id}/top-history`
+      );
+      expect(totalHistoryResponse.status).toBe(200);
+      expect(totalHistoryResponse.body.length).toBe(4);
+
+      expect(totalHistoryResponse.body[0].player.username).toBe('toblink');
+      expect(totalHistoryResponse.body[0].history.length).toBe(2);
+      expect(totalHistoryResponse.body[0].history[0].value).toBe(4_000_000);
+      expect(totalHistoryResponse.body[0].history[1].value).toBe(2_500_000);
+
+      expect(totalHistoryResponse.body[1].player.username).toBe('tobilical');
+      expect(totalHistoryResponse.body[1].history.length).toBe(2);
+      expect(totalHistoryResponse.body[1].history[0].value).toBe(27_900_000);
+      expect(totalHistoryResponse.body[1].history[1].value).toBe(26_700_000);
+
+      expect(totalHistoryResponse.body[2].player.username).toBe('tobicula');
+      expect(totalHistoryResponse.body[2].history.length).toBe(2);
+      expect(totalHistoryResponse.body[2].history[0].value).toBe(50_000);
+      expect(totalHistoryResponse.body[2].history[1].value).toBe(-1);
+
+      expect(totalHistoryResponse.body[3].player.username).toBe('tobinky');
+      expect(totalHistoryResponse.body[3].history.length).toBe(2);
+      expect(totalHistoryResponse.body[3].history[0].value).toBe(-1);
+      expect(totalHistoryResponse.body[3].history[1].value).toBe(-1);
+
+      const fishingHistoryResponse = await api
+        .get(`/competitions/${createResponse.body.competition.id}/top-history`)
+        .query({ metric: 'fishing' });
+
+      expect(fishingHistoryResponse.status).toBe(200);
+      expect(fishingHistoryResponse.body.length).toBe(4);
+
+      expect(fishingHistoryResponse.body[0].player.username).toBe('tobilical');
+      expect(fishingHistoryResponse.body[0].history.length).toBe(2);
+      expect(fishingHistoryResponse.body[0].history[0].value).toBe(13_200_000);
+      expect(fishingHistoryResponse.body[0].history[1].value).toBe(12_200_000);
+
+      expect(fishingHistoryResponse.body[1].player.username).toBe('toblink');
+      expect(fishingHistoryResponse.body[1].history.length).toBe(2);
+      expect(fishingHistoryResponse.body[1].history[0].value).toBe(3_100_000);
+      expect(fishingHistoryResponse.body[1].history[1].value).toBe(2_400_000);
+
+      expect(fishingHistoryResponse.body[2].player.username).toBe('tobicula');
+      expect(fishingHistoryResponse.body[2].history.length).toBe(2);
+      expect(fishingHistoryResponse.body[2].history[0].value).toBe(-1);
+      expect(fishingHistoryResponse.body[2].history[1].value).toBe(-1);
+
+      expect(fishingHistoryResponse.body[3].player.username).toBe('tobinky');
+      expect(fishingHistoryResponse.body[3].history.length).toBe(2);
+      expect(fishingHistoryResponse.body[3].history[0].value).toBe(-1);
+      expect(fishingHistoryResponse.body[3].history[1].value).toBe(-1);
+
+      await prisma.competition.delete({
+        where: { id: createResponse.body.competition.id }
+      });
+    });
   });
 
   describe('10 - View CSV Export', () => {
@@ -2896,7 +3716,7 @@ describe('Competition API', () => {
     it('should not view CSV export (invalid metric)', async () => {
       const response = await api
         .get(`/competitions/${globalData.testCompetitionStarted.id}/csv`)
-        .query({ metric: 'sailing' });
+        .query({ metric: 'dungeoneering' });
 
       expect(response.status).toBe(400);
       expect(response.body.message).toMatch("Invalid enum value for 'metric'.");
@@ -3062,7 +3882,7 @@ describe('Competition API', () => {
       });
 
       expect(response.body[1]).toMatchObject({
-        teamName: 'Warriors',
+        teamName: '_Warriors',
         competitionId: globalData.testCompetitionWithGroup.id,
         competition: {
           id: globalData.testCompetitionWithGroup.id,
@@ -3130,7 +3950,7 @@ describe('Competition API', () => {
       });
 
       expect(response.body[1]).toMatchObject({
-        teamName: 'Warriors',
+        teamName: '_Warriors',
         competitionId: globalData.testCompetitionWithGroup.id,
         competition: {
           id: globalData.testCompetitionWithGroup.id,
@@ -3287,7 +4107,7 @@ describe('Competition API', () => {
       });
 
       expect(response.body[1]).toMatchObject({
-        teamName: 'Warriors',
+        teamName: '_Warriors',
         competitionId: globalData.testCompetitionWithGroup.id,
         competition: {
           id: globalData.testCompetitionWithGroup.id,
@@ -3393,6 +4213,241 @@ describe('Competition API', () => {
         },
         rank: 1,
         progress: { end: -1, gained: 0, start: -1 }
+      });
+    });
+
+    it('should list player competition standings (multiple metrics)', async () => {
+      /**
+       * morticia starts at 100k hunter, 2.4m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 100_000 },
+            { hiscoresMetricName: 'Fishing', value: 2_400_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/morticia`);
+
+      /**
+       * gomez starts at 14.5m hunter, 12.2m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 14_500_000 },
+            { hiscoresMetricName: 'Fishing', value: 12_200_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/gomez`);
+
+      /**
+       * thing starts at -1 hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: -1 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/thing`);
+
+      /**
+       * fester starts at -1 hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: -1 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/fester`);
+
+      // Fake the current date to be 20 minutes ago
+      jest.useFakeTimers().setSystemTime(new Date(Date.now() - 1_200_000));
+
+      const startDate = new Date(Date.now() + 10_000);
+      const endDate = new Date(Date.now() + 10_000 + 604_800_000);
+
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'true';
+      const createResponse = await api.post('/competitions').send({
+        title: 'Test',
+        metrics: ['hunter', 'fishing'],
+        startsAt: startDate,
+        endsAt: endDate,
+        participants: ['morticia', 'gomez', 'thing', 'fester']
+      });
+      process.env.API_FEATURE_FLAG_MULTI_METRIC_COMPETITIONS = 'false';
+
+      expect(createResponse.status).toBe(201);
+      expect(createResponse.body.competition).toMatchObject({
+        metric: 'hunter',
+        metrics: ['hunter', 'fishing']
+      });
+
+      // Reset the timers to the current (REAL) time
+      jest.useRealTimers();
+
+      /**
+       * morticia ends at 900k hunter, 3.1m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 900_000 },
+            { hiscoresMetricName: 'Fishing', value: 3_100_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/morticia`);
+
+      /**
+       * gomez ends at 14.7m hunter, 13.2m fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 14_700_000 },
+            { hiscoresMetricName: 'Fishing', value: 13_200_000 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/gomez`);
+
+      /**
+       * thing ends at 50k hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: 50_000 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/thing`);
+
+      /**
+       * fester ends at -1 hunter, -1 fishing
+       */
+      registerHiscoresMock(axiosMock, {
+        [PlayerType.REGULAR]: {
+          statusCode: 200,
+          rawData: modifyRawHiscoresData(globalData.hiscoresRawData, [
+            { hiscoresMetricName: 'Hunter', value: -1 },
+            { hiscoresMetricName: 'Fishing', value: -1 }
+          ])
+        },
+        [PlayerType.IRONMAN]: { statusCode: 404 }
+      });
+      await api.post(`/players/fester`);
+
+      const morticiaStandingsResponse = await api
+        .get(`/players/morticia/competitions/standings`)
+        .query({ status: 'ongoing' });
+
+      expect(morticiaStandingsResponse.status).toBe(200);
+      expect(morticiaStandingsResponse.body).toMatchObject([
+        {
+          levels: {
+            start: 130,
+            end: 156,
+            gained: 26
+          },
+          progress: {
+            start: 2_500_000,
+            end: 4_000_000,
+            gained: 1_500_000
+          },
+          rank: 1
+        }
+      ]);
+
+      const gomezStandingsResponse = await api
+        .get(`/players/gomez/competitions/standings`)
+        .query({ status: 'ongoing' });
+
+      expect(gomezStandingsResponse.status).toBe(200);
+      expect(gomezStandingsResponse.body).toMatchObject([
+        {
+          levels: {
+            start: 197,
+            end: 198,
+            gained: 1
+          },
+          progress: {
+            start: 26_700_000,
+            end: 27_900_000,
+            gained: 1_200_000
+          },
+          rank: 2
+        }
+      ]);
+
+      const thingStandingsResponse = await api
+        .get(`/players/thing/competitions/standings`)
+        .query({ status: 'ongoing' });
+
+      expect(thingStandingsResponse.status).toBe(200);
+      expect(thingStandingsResponse.body).toMatchObject([
+        {
+          levels: {
+            start: 2,
+            end: 43,
+            gained: 41
+          },
+          progress: {
+            start: -1,
+            end: 50_000,
+            gained: 50_000
+          },
+          rank: 3
+        }
+      ]);
+
+      const festerStandingsResponse = await api
+        .get(`/players/fester/competitions/standings`)
+        .query({ status: 'ongoing' });
+
+      expect(festerStandingsResponse.status).toBe(200);
+      expect(festerStandingsResponse.body).toMatchObject([
+        {
+          levels: {
+            start: 2,
+            end: 2,
+            gained: 0
+          },
+          progress: {
+            start: -1,
+            end: -1,
+            gained: 0
+          },
+          rank: 4
+        }
+      ]);
+
+      await prisma.competition.delete({
+        where: { id: createResponse.body.competition.id }
       });
     });
   });

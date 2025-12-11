@@ -7,10 +7,9 @@ import {
   PERIODS,
   Period,
   PeriodProps,
-  Record,
+  RecordResponse,
   isComputedMetric,
 } from "@wise-old-man/utils";
-import { cn } from "~/utils/styling";
 import { formatDatetime } from "~/utils/dates";
 import { getPlayerDetails, getPlayerRecords } from "~/services/wiseoldman";
 import { MetricIcon } from "~/components/Icon";
@@ -99,14 +98,14 @@ export default async function PlayerRecordsPage(props: PageProps) {
 
 interface MetricRecordsProps {
   metric: Metric;
-  records: Record[];
+  records: RecordResponse[];
   username: string;
 }
 
 function MetricRecords(props: MetricRecordsProps) {
   const { metric, records, username } = props;
 
-  const map = new Map<Period, Record>();
+  const map = new Map<Period, RecordResponse>();
 
   records.forEach((record) => {
     const values = map.get(record.period);
@@ -151,6 +150,7 @@ function MetricRecords(props: MetricRecordsProps) {
               prefetch={false}
               key={`${metric}_${period}`}
               href={`/players/${username}/gained?${params.toString()}`}
+              rel="nofollow"
               className="group flex items-center justify-between rounded-lg border border-gray-500 bg-gray-800 px-5 py-3 shadow-sm"
             >
               <span className="text-sm font-medium text-white group-hover:underline">
@@ -183,8 +183,8 @@ function convertMetricType(metricType?: string) {
   return MetricType.SKILL;
 }
 
-function aggregateRecordsPerMetric(records: Record[]) {
-  const map = new Map<Metric, Record[]>();
+function aggregateRecordsPerMetric(records: RecordResponse[]) {
+  const map = new Map<Metric, RecordResponse[]>();
 
   records.forEach((record) => {
     const values = map.get(record.metric);

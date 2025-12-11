@@ -1,18 +1,19 @@
 import {
-  Achievement,
-  AchievementProgress,
+  AchievementResponse,
+  AchievementProgressResponse,
   METRICS,
   Metric,
   MetricMeasure,
   MetricProps,
   MetricType,
-  Player,
   REAL_SKILLS,
-  formatNumber,
   getLevel,
   isActivity,
   isBoss,
   isSkill,
+  PlayerResponse,
+  formatNumber,
+  getExpForLevel,
 } from "@wise-old-man/utils";
 import { cn } from "~/utils/styling";
 import { getPlayerAchievementProgress, getPlayerDetails } from "~/services/wiseoldman";
@@ -87,6 +88,7 @@ export default async function PlayerAchievements(props: PageProps) {
         <div className="col-span-12 grid grid-cols-1 flex-col gap-x-4 gap-y-7 sm:grid-cols-2 xl:col-span-4 xl:flex">
           <RecentAchievements achievements={completedAchievements} metricType={metricType} />
           <NearestAchievements achievements={achievements} metricType={metricType} />
+          <LegacyAchievements achievements={completedAchievements} metricType={metricType} />
         </div>
         <div className="col-span-12 xl:col-span-8">
           <ProgressTable player={player} achievements={achievements} metricType={metricType} />
@@ -97,8 +99,8 @@ export default async function PlayerAchievements(props: PageProps) {
 }
 
 interface ProgressTableProps {
-  player: Player;
-  achievements: AchievementProgress[];
+  player: PlayerResponse;
+  achievements: AchievementProgressResponse[];
   metricType?: MetricType;
 }
 
@@ -106,7 +108,7 @@ function ProgressTable(props: ProgressTableProps) {
   const { player, metricType, achievements } = props;
 
   const hiddenMetrics = getBuildHiddenMetrics(player.build);
-  const filteredAchievements = achievements.filter((a) => !hiddenMetrics.includes(a.metric));
+  const filteredAchievements = achievements.filter((a) => !hiddenMetrics.includes(a.metric) && !a.legacy);
 
   const groups = groupAchievementsByType(filteredAchievements).filter(
     (g) => g.metric in MetricProps && (!metricType || MetricProps[g.metric].type === metricType)
@@ -127,7 +129,7 @@ function ProgressTable(props: ProgressTableProps) {
 interface ProgressTableRowProps {
   metric: Metric;
   measure: MetricMeasure | "levels";
-  achievements: AchievementProgress[];
+  achievements: AchievementProgressResponse[];
 }
 
 function ProgressTableRow(props: ProgressTableRowProps) {
@@ -191,7 +193,10 @@ function ProgressTableRow(props: ProgressTableRowProps) {
                 </TooltipTrigger>
                 <TooltipContent className="p-0">
                   {a.createdAt ? (
-                    <AchievementAccuracyTooltip achievement={{ ...a } as Achievement} showTitle />
+                    <AchievementAccuracyTooltip
+                      achievement={{ ...a } as AchievementResponse}
+                      showTitle
+                    />
                   ) : (
                     <IncompleteAchievementTooltip achievement={a} />
                   )}
@@ -206,7 +211,7 @@ function ProgressTableRow(props: ProgressTableRowProps) {
 }
 
 interface RecentAchievementsProps {
-  achievements: AchievementProgress[];
+  achievements: AchievementProgressResponse[];
   metricType?: MetricType;
 }
 
@@ -240,7 +245,7 @@ function RecentAchievements(props: RecentAchievementsProps) {
 }
 
 interface NearestAchievementsProps {
-  achievements: AchievementProgress[];
+  achievements: AchievementProgressResponse[];
   metricType?: MetricType;
 }
 
@@ -266,6 +271,40 @@ function NearestAchievements(props: NearestAchievementsProps) {
       </Label>
       <div className="mt-2 flex flex-col gap-y-3">
         {nearestAchievements.map((a) => (
+          <AchievementListItem {...a} key={a.name} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+interface LegacyAchievementsProps {
+  metricType?: MetricType;
+  achievements: AchievementProgressResponse[];
+}
+
+function LegacyAchievements(props: LegacyAchievementsProps) {
+  const {  metricType, achievements } = props;
+  
+  const legacyAchievements = achievements
+    .filter(
+      (a) =>
+        a.metric in MetricProps &&
+        a.createdAt &&
+        a.legacy && 
+        (!metricType || MetricProps[a.metric].type === metricType)
+    )
+    .sort((a, b) => b.createdAt!.getTime() - a.createdAt!.getTime())
+
+  if (legacyAchievements.length === 0) return null;
+
+  return (
+    <div>
+      <Label className="text-xs text-gray-200">
+        Legacy {metricType ? `${metricType} ` : ""} achievements
+      </Label>
+      <div className="mt-2 flex flex-col gap-y-3">
+        {legacyAchievements.map((a) => (
           <AchievementListItem {...a} key={a.name} />
         ))}
       </div>
@@ -299,7 +338,7 @@ function convertMetricType(metricType?: string) {
   return MetricType.SKILL;
 }
 
-function groupAchievementsByType(achievements: AchievementProgress[]) {
+function groupAchievementsByType(achievements: AchievementProgressResponse[]) {
   if (!achievements) {
     return [];
   }
@@ -307,7 +346,7 @@ function groupAchievementsByType(achievements: AchievementProgress[]) {
   const groups: Array<{
     metric: Metric;
     measure: MetricMeasure;
-    achievements: AchievementProgress[];
+    achievements: AchievementProgressResponse[];
   }> = [];
 
   achievements.forEach((a) => {
@@ -329,18 +368,24 @@ function formatThreshold(threshold: number) {
     return threshold;
   }
 
+  if (threshold === getExpForLevel(99)) {
+    return "99";
+  }
+
   if (
-    [273742, 737627, 1986068, 5346332, 13034431].map((i) => i * REAL_SKILLS.length).includes(threshold)
+    [
+      getExpForLevel(60) * REAL_SKILLS.length,
+      getExpForLevel(70) * REAL_SKILLS.length,
+      getExpForLevel(80) * REAL_SKILLS.length,
+      getExpForLevel(90) * REAL_SKILLS.length,
+      getExpForLevel(99) * REAL_SKILLS.length,
+    ].includes(threshold)
   ) {
     return getLevel(threshold / REAL_SKILLS.length + 100).toString();
   }
 
   if (threshold <= 10000) {
     return `${threshold / 1000}k`;
-  }
-
-  if (threshold === 13034431) {
-    return "99";
   }
 
   return formatNumber(threshold, true);

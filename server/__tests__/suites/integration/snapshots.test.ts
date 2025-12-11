@@ -1,26 +1,19 @@
 import axios from 'axios';
 import MockAdapter from 'axios-mock-adapter';
-import {
-  PlayerType,
-  SKILLS,
-  getMetricValueKey,
-  getMetricRankKey,
-  Metric,
-  PeriodProps,
-  Period
-} from '../../../src/utils';
-import * as utils from '../../../src/api/modules/snapshots/snapshot.utils';
-import { resetDatabase, readFile, registerHiscoresMock, modifyRawHiscoresData } from '../../utils';
-import { Snapshot } from '../../../src/api/modules/snapshots/snapshot.types';
-import { findPlayerSnapshots } from '../../../src/api/modules/snapshots/services/FindPlayerSnapshotsService';
-import { redisClient } from '../../../src/services/redis.service';
 import { eventEmitter } from '../../../src/api/events';
+import { buildHiscoresSnapshot } from '../../../src/api/modules/snapshots/services/BuildHiscoresSnapshot';
+import { findPlayerSnapshots } from '../../../src/api/modules/snapshots/services/FindPlayerSnapshotsService';
+import * as utils from '../../../src/api/modules/snapshots/snapshot.utils';
 import prisma from '../../../src/prisma';
+import { HiscoresDataSchema } from '../../../src/services/jagex.service';
+import { redisClient } from '../../../src/services/redis.service';
+import { Metric, Period, PlayerType, SKILLS, Snapshot } from '../../../src/types';
+import { getMetricRankKey } from '../../../src/utils/get-metric-rank-key.util';
+import { getMetricValueKey } from '../../../src/utils/get-metric-value-key.util';
+import { PeriodProps } from '../../../src/utils/shared';
+import { modifyRawHiscoresData, readFile, registerHiscoresMock, resetDatabase } from '../../utils';
 
 const axiosMock = new MockAdapter(axios, { onNoMatch: 'passthrough' });
-
-const HISCORES_FILE_PATH_P = `${__dirname}/../../data/hiscores/psikoi_hiscores.txt`;
-const HISCORES_FILE_PATH_LT = `${__dirname}/../../data/hiscores/lynx_titan_hiscores.txt`;
 
 const globalData = {
   hiscoresRawDataP: '',
@@ -37,8 +30,8 @@ beforeAll(async () => {
   await resetDatabase();
   await redisClient.flushall();
 
-  globalData.hiscoresRawDataP = await readFile(HISCORES_FILE_PATH_P);
-  globalData.hiscoresRawDataLT = await readFile(HISCORES_FILE_PATH_LT);
+  globalData.hiscoresRawDataP = await readFile(`${__dirname}/../../data/hiscores/psikoi_hiscores.json`);
+  globalData.hiscoresRawDataLT = await readFile(`${__dirname}/../../data/hiscores/lynx_titan_hiscores.json`);
 
   // Mock regular hiscores data, and block any ironman requests
   registerHiscoresMock(axiosMock, {
@@ -54,22 +47,11 @@ afterAll(() => {
 
 describe('Snapshots API', () => {
   describe('1 - Creating from OSRS Hiscores', () => {
-    it('should not create snapshot (hiscores change)', async () => {
-      const [firstLine, ...rest] = globalData.hiscoresRawDataLT.split('\n');
-      const rawDataMinusOneLine = rest.join('\n');
-      const rawDataPlusOneLine = `${globalData.hiscoresRawDataLT}\n${firstLine}`;
-
-      await expect(utils.parseHiscoresSnapshot(1, rawDataMinusOneLine)).rejects.toThrow(
-        'The OSRS Hiscores were updated. Please wait for a fix.'
-      );
-
-      await expect(utils.parseHiscoresSnapshot(1, rawDataPlusOneLine)).rejects.toThrow(
-        'The OSRS Hiscores were updated. Please wait for a fix.'
-      );
-    });
-
     it('should create snapshot (Lynx Titan)', async () => {
-      const snapshot = await utils.parseHiscoresSnapshot(1, globalData.hiscoresRawDataLT);
+      const snapshot = buildHiscoresSnapshot(
+        1,
+        HiscoresDataSchema.parse(JSON.parse(globalData.hiscoresRawDataLT))
+      );
 
       expect(snapshot.playerId).toBe(1);
       expect(snapshot.importedAt).toBeUndefined();
@@ -92,7 +74,10 @@ describe('Snapshots API', () => {
     });
 
     it('should create snapshot (Psikoi)', async () => {
-      const snapshot = await utils.parseHiscoresSnapshot(1, globalData.hiscoresRawDataP);
+      const snapshot = buildHiscoresSnapshot(
+        1,
+        HiscoresDataSchema.parse(JSON.parse(globalData.hiscoresRawDataP))
+      );
 
       expect(snapshot.playerId).toBe(1);
       expect(snapshot.importedAt).toBeUndefined();
@@ -100,7 +85,7 @@ describe('Snapshots API', () => {
       SKILLS.forEach(skill => {
         if (skill === Metric.OVERALL) {
           expect(snapshot.overallRank).toBe(51181);
-          expect(snapshot.overallExperience).toBe(300_192_115);
+          expect(snapshot.overallExperience).toBe(304_439_328);
         } else {
           expect(snapshot[getMetricRankKey(skill)]).toBeLessThan(260_000);
           expect(snapshot[getMetricValueKey(skill)]).toBeGreaterThan(4_000_000);
@@ -113,19 +98,19 @@ describe('Snapshots API', () => {
       expect(snapshot.barrows_chestsKills).toBe(1773);
       expect(snapshot.commander_zilyanaKills).toBe(1350);
 
-      // The legacy BH metrics are set to 100/200 score on the CSV
-      // but we should be ignoring those when parsing the CSV, and instead
+      // The legacy BH metrics are set to 100/200 score on the JSON file
+      // but we should be ignoring those when parsing the JSON file, and instead
       // use the new BH metrics for the snapshot (which are both unranked at -1)
       expect(snapshot.bounty_hunter_rogueScore).toBe(-1);
       expect(snapshot.bounty_hunter_hunterScore).toBe(-1);
 
       // Now simulate gains in the new BH metrics
       const modifiedRawData = modifyRawHiscoresData(globalData.hiscoresRawDataP, [
-        { metric: Metric.BOUNTY_HUNTER_HUNTER, value: 17 },
-        { metric: Metric.BOUNTY_HUNTER_ROGUE, value: 45 }
+        { hiscoresMetricName: 'Bounty Hunter - Hunter', value: 17 },
+        { hiscoresMetricName: 'Bounty Hunter - Rogue', value: 45 }
       ]);
 
-      const newSnapshot = await utils.parseHiscoresSnapshot(1, modifiedRawData);
+      const newSnapshot = buildHiscoresSnapshot(1, HiscoresDataSchema.parse(JSON.parse(modifiedRawData)));
 
       // Now these shouldn't be unranked
       expect(newSnapshot.bounty_hunter_rogueScore).toBe(45);

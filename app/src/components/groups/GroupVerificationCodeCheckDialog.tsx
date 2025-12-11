@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { cn } from "~/utils/styling";
 import { useMutation } from "@tanstack/react-query";
-import { GroupListItem } from "@wise-old-man/utils";
+import { GroupResponse } from "@wise-old-man/utils";
 import { useToast } from "~/hooks/useToast";
 import { useWOMClient } from "~/hooks/useWOMClient";
 import { Input } from "../Input";
@@ -19,7 +19,7 @@ import CheckIcon from "~/assets/check.svg";
 interface GroupVerificationCodeCheckDialogProps {
   isOpen: boolean;
   isEditingGroupCompetition?: boolean;
-  group: GroupListItem;
+  group: GroupResponse;
   competitionId?: number;
   onValidated: (code: string) => void;
 }
@@ -103,7 +103,9 @@ export function GroupVerificationCodeCheckDialog(props: GroupVerificationCodeChe
               </>
             ) : (
               <>
-                <Label className="text-xs font-normal text-gray-200">Verification code</Label>
+                <Label className="text-xs font-normal text-gray-200" htmlFor="verificationCode">
+                  Verification code
+                </Label>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span>
@@ -126,6 +128,7 @@ export function GroupVerificationCodeCheckDialog(props: GroupVerificationCodeChe
             )}
           </div>
           <Input
+            id="verificationCode"
             type="password"
             autoFocus
             name="verificationCode"

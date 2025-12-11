@@ -1,25 +1,18 @@
 import supertest from 'supertest';
-import prisma from '../../../src/prisma';
-import {
-  Boss,
-  SKILLS,
-  MAX_SKILL_EXP,
-  SKILL_EXP_AT_99,
-  EfficiencyAlgorithmType,
-  PlayerType,
-  PlayerBuild
-} from '../../../src/utils';
-import apiServer from '../../../src/api';
+import APIInstance from '../../../src/api';
+import { eventEmitter } from '../../../src/api/events';
 import { ALGORITHMS, getAlgorithm } from '../../../src/api/modules/efficiency/efficiency.utils';
-import testSkillingMetas from '../../data/efficiency/configs/test.ehp';
-import testBossingMetas from '../../data/efficiency/configs/test.ehb';
-import { resetDatabase } from '../../utils';
 import EfficiencyAlgorithm from '../../../src/api/modules/efficiency/EfficiencyAlgorithm';
 import { computeEfficiencyRank } from '../../../src/api/modules/efficiency/services/ComputeEfficiencyRankService';
+import prisma from '../../../src/prisma';
 import { redisClient } from '../../../src/services/redis.service';
-import { eventEmitter } from '../../../src/api/events';
+import { Boss, EfficiencyAlgorithmType, PlayerBuild, PlayerType, SKILLS } from '../../../src/types';
+import { MAX_SKILL_EXP, SKILL_EXP_AT_99 } from '../../../src/utils/shared';
+import testBossingMetas from '../../data/efficiency/configs/test.ehb';
+import testSkillingMetas from '../../data/efficiency/configs/test.ehp';
+import { resetDatabase } from '../../utils';
 
-const api = supertest(apiServer.express);
+const api = supertest(new APIInstance().init().express);
 
 beforeAll(async () => {
   eventEmitter.init();
@@ -58,7 +51,10 @@ beforeAll(async () => {
 
     await prisma.player.update({
       where: { id: player.id },
-      data: { latestSnapshotId: snapshot.id }
+      data: {
+        latestSnapshotId: snapshot.id,
+        latestSnapshotDate: snapshot.createdAt
+      }
     });
   }
 
@@ -138,12 +134,12 @@ describe('Efficiency API', () => {
 
       expect(
         ALGORITHMS.get(EfficiencyAlgorithmType.MAIN)!.calculateEHPMap(maxedStats).get('overall')
-      ).toBeCloseTo(962.9246338539108, 4);
+      ).toBeCloseTo(1037.11444, 4);
 
       const maximumStats = new Map(SKILLS.map(s => [s, MAX_SKILL_EXP]));
       expect(
         ALGORITHMS.get(EfficiencyAlgorithmType.MAIN)!.calculateEHPMap(maximumStats).get('overall')
-      ).toBeCloseTo(12813.80829, 4);
+      ).toBeCloseTo(13718.95618, 4);
     });
   });
 
